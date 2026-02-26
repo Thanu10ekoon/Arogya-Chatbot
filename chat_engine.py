@@ -82,7 +82,12 @@ def _build_system_prompt(role: str, user_id: int) -> str:
             "CRITICAL: Patients can ONLY access their OWN data. "
             "The backend will automatically filter consultations and lab results to show only your data, so you can call these functions without specifying IDs. "
             "Patients can also browse available clinics. "
-            "NEVER fetch or reveal other patients' data."
+            "NEVER fetch or reveal other patients' data.\n\n"
+            "QUEUE POSITION RULES:\n"
+            "When a patient asks about their queue position, call get_clinic_queue. "
+            "The result will contain a '_current_user_tokens' field that shows ONLY the tokens belonging to this patient. "
+            "Use THAT data to report the patient's position accurately. "
+            "Do NOT guess or count manually — ONLY use the '_current_user_tokens' data."
         )
     return base
 
@@ -205,6 +210,30 @@ async def _execute_tool(
 
         elif function_name == "get_clinic_queue":
             result = await api_client.get_clinic_queue(str(arguments["clinic_id"]))
+            # Annotate which tokens belong to the current user so the LLM
+            # can accurately report "your position" instead of guessing.
+            if role.lower() == "patient" and isinstance(result, list):
+                try:
+                    profile = await api_client.get_patient_profile_by_user_id(user_id)
+                    patient_profile_id = profile.get("id") if isinstance(profile, dict) else None
+                    if patient_profile_id is not None:
+                        my_tokens = []
+                        for token in result:
+                            pid = token.get("patientId") or token.get("patient_id")
+                            if pid is not None and int(pid) == int(patient_profile_id):
+                                token["_is_current_user"] = True
+                                my_tokens.append({
+                                    "token_number": token.get("tokenNumber"),
+                                    "position": token.get("position"),
+                                    "status": token.get("status"),
+                                })
+                        result = {
+                            "queue": result,
+                            "_current_user_tokens": my_tokens if my_tokens else "You do not have any tokens in this clinic's queue.",
+                            "_note": "Tokens marked with _is_current_user=True belong to the currently logged-in patient. Use these to report their queue position accurately."
+                        }
+                except Exception:
+                    pass  # fall through with unmodified result
 
         elif function_name == "get_consultations":
             result = await api_client.get_consultations(
