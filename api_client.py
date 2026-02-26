@@ -99,6 +99,10 @@ async def get_doctor_profile_by_user_id(user_id: int):
     return await _get(f"{USER_SERVICE_URL}/doctor_profile/getDoctorProfileByUserId/{user_id}")
 
 
+async def get_doctor_profile(doctor_id: int):
+    return await _get(f"{USER_SERVICE_URL}/doctor_profile/getDoctorProfile/{doctor_id}")
+
+
 # ── Admin / Technician Profiles ──────────────────────────────────────────────
 
 async def get_all_admins():
@@ -107,6 +111,10 @@ async def get_all_admins():
 
 async def get_all_technicians():
     return await _get(f"{USER_SERVICE_URL}/technician_profile/getAllTechnicianProfiles")
+
+
+async def get_admin_profile_by_user_id(user_id: int):
+    return await _get(f"{USER_SERVICE_URL}/admin_profile/getAdminProfileByUserId/{user_id}")
 
 
 # ── Clinic Service ───────────────────────────────────────────────────────────
@@ -129,7 +137,15 @@ async def get_clinic_queue(clinic_id: str):
     return await _get(f"{QUEUE_SERVICE_URL}/queue/clinics/{clinic_id}/tokens")
 
 
+async def get_queue_token(token_id: int):
+    return await _get(f"{QUEUE_SERVICE_URL}/queue/tokens/{token_id}")
+
+
 # ── Consultation Service ─────────────────────────────────────────────────────
+
+async def get_consultation(consultation_id: int):
+    return await _get(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}")
+
 
 async def get_consultations(
     patient_id: int | None = None,
@@ -161,10 +177,6 @@ async def get_consultations(
     if isinstance(data, list):
         print(f"[DEBUG] Found {len(data)} consultations (direct list)")
     return data
-
-
-async def get_consultation(consultation_id: int):
-    return await _get(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}")
 
 
 async def get_consultation_with_tests(consultation_id: int):
@@ -202,3 +214,17 @@ async def get_test_results_by_patient(patient_id: int):
 
 async def get_test_result(test_result_id: int):
     return await _get(f"{MEDICAL_RECORDS_SERVICE_URL}/test-results/{test_result_id}")
+
+
+async def get_test_result_by_lab_test(lab_test_id: int):
+    return await _get(f"{MEDICAL_RECORDS_SERVICE_URL}/test-results/lab-test/{lab_test_id}")
+
+
+async def get_all_test_results():
+    params = {"size": 200, "sortBy": "createdAt", "sortDir": "DESC"}
+    qs = "&".join(f"{k}={v}" for k, v in params.items())
+    url = f"{MEDICAL_RECORDS_SERVICE_URL}/test-results?{qs}"
+    data = await _get(url)
+    if isinstance(data, dict) and "content" in data:
+        return data["content"]
+    return data
