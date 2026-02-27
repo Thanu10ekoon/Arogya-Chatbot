@@ -41,7 +41,7 @@ def _build_system_prompt(role: str, user_id: int) -> str:
         f"7. An event/clinic is considered UPCOMING if its scheduled_date is ON or AFTER today ({today}).\n"
         f"8. When analyzing dates, be precise. For queries like 'December 2025', only count records with dates in that specific month/year.\n\n"
         f"DATA HANDLING RULES:\n"
-        f"9. Do NOT make up patient names, IDs, clinic names, dates, or any medical data.\n"
+        f"9. Do NOT make up patient names, doctor names, IDs, clinic names, dates, or any medical data. If a tool returns an error or empty results, tell the user no data was found — NEVER fabricate or guess names.\n"
         f"10. Present data in a clear, readable format (use bullet points or numbered lists when appropriate).\n"
         f"11. For analytical questions (trends, predictions, comparisons), fetch the relevant data first, then analyze it thoroughly.\n"
         f"12. If a backend service returns an error, inform the user clearly that the service is unavailable. Do NOT expose raw error details.\n"
@@ -57,8 +57,9 @@ def _build_system_prompt(role: str, user_id: int) -> str:
         f"20. ONLY present the FINAL, user-friendly answer AFTER you have the data. Skip ALL narration and go straight to the answer.\n\n"
         f"CLINIC NAME RESOLUTION RULES:\n"
         f"21. Users refer to clinics by NAME (e.g., 'Kalutara clinic', 'Kandy Mobile Clinic'), NOT by numeric ID.\n"
-        f"22. When a user asks about a specific clinic by name, call get_clinic_queue/get_clinic_details/get_clinic_doctors directly with the clinic name — the system will automatically resolve it to the correct numeric ID.\n"
-        f"23. If no clinic matches the name, tell the user the clinic was not found and list available clinics.\n"
+        f"22. When a user asks about a specific clinic by name, pass the clinic name directly as the clinic_id parameter (e.g., clinic_id='Kalutara'). The system will automatically resolve it to the correct numeric ID. Do NOT guess a numeric ID.\n"
+        f"23. If no clinic matches the name, tell the user the clinic was not found and suggest calling get_all_clinics.\n"
+        f"24. NEVER invent or fabricate doctor names. Only present doctor names that appear in the tool response data.\n"
     )
 
     if role.lower() == "admin":
