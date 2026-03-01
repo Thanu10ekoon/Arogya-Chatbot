@@ -49,7 +49,11 @@ def _build_system_prompt(role: str, user_id: int) -> str:
         f"14. Never expose raw JSON to the user; always format it nicely.\n"
         f"15. For small talk, greetings, or general questions about Arogya (what it is, how it works, its features, etc.), respond naturally from your own knowledge WITHOUT calling any tools. "
         f"You already know that Arogya is a mobile clinic management system for Sri Lanka that handles clinics, patient records, consultations, lab tests, doctor management, and queue management.\n"
-        f"16. ONLY call get_my_profile when the user EXPLICITLY asks to see their own profile, personal details, or account information. Do NOT call it for general questions.\n\n"
+        f"16. ONLY call get_my_profile when the user EXPLICITLY asks to see their own profile, personal details, or account information. Do NOT call it for general questions.\n"
+        f"17. CRITICAL: For follow-up questions about details of previously mentioned data (e.g., 'what did I recommend?', 'what was the diagnosis?'), "
+        f"you MUST call the appropriate tool again (e.g., get_consultation_with_tests) to fetch the full record. "
+        f"Do NOT answer from the conversation history alone — the earlier response may have been summarized. "
+        f"NEVER invent or fabricate field values like recommendations, diagnoses, complaints, or dates.\n\n"
         f"RESPONSE STYLE RULES:\n"
         f"17. NEVER show your internal reasoning, intermediate steps, or thinking process to the user.\n"
         f"18. NEVER display raw JSON, tool call details, clinic IDs, or API results in your response.\n"
@@ -73,9 +77,27 @@ def _build_system_prompt(role: str, user_id: int) -> str:
     elif role.lower() == "doctor":
         return base + (
             f"\nThe current user is a DOCTOR (user ID: {user_id}). "
-            "Doctors can view their own profile, see patient details, view consultations (their own and their patients'), "
-            "view clinic information, check queues, and see lab test results. "
-            "When fetching your own consultations, use doctor_id={user_id}."
+            f"Doctors can view their own profile, see patient details, view consultations (their own and their patients'), "
+            f"view clinic information, check queues, and see lab test results. "
+            f"When fetching your own consultations, ALWAYS use doctor_id={user_id}.\n\n"
+            f"CRITICAL CROSS-SERVICE DATA LINKING RULES:\n"
+            f"- The system has SEPARATE databases for users and consultations. To find a patient's consultations, you MUST first find their USER ID.\n"
+            f"- STEP 1: To find a patient by USERNAME (e.g., 'yrcd27'), call get_all_users or get_all_patients. "
+            f"In get_all_users, the 'id' field IS the user_id. "
+            f"In get_all_patients, each patient profile has a nested 'user' object — the USERNAME is in 'user.username' and the USER ID is in 'user.id'.\n"
+            f"- STEP 2: Use the USER ID (user.id) as the patient_id parameter when calling get_consultations. "
+            f"Example: if user.id=20 for username 'yrcd27', call get_consultations(doctor_id={user_id}, patient_id=20).\n"
+            f"- IMPORTANT: The 'id' field directly on a patient profile is the PROFILE ID, NOT the user_id. Always use 'user.id' (the nested user's id) as patient_id for consultations.\n"
+            f"- To find a patient by FIRST NAME or LAST NAME, call get_all_patients and search the 'firstName' and 'lastName' fields.\n"
+            f"- To find a patient by NIC, call get_all_patients and search the 'nicNumber' field.\n\n"
+            f"DOCTOR-SPECIFIC RULES:\n"
+            f"- When asked 'did I consult patient X?', FIRST find the patient's user_id (via get_all_users or get_all_patients), "
+            f"THEN call get_consultations with doctor_id={user_id} and patient_id=<found_user_id>. "
+            f"If consultations are found, answer YES with details. If empty, answer NO.\n"
+            f"- If no patient matches the search, say the patient was not found. NEVER guess or invent patient details.\n"
+            f"- When asked about recommendations, prescriptions, complaints, or any consultation details, you MUST call get_consultation_with_tests using the consultation ID to fetch the FULL record. "
+            f"Read the EXACT field values from the response. If a field (like 'recommendations') is null or empty, say 'No recommendations were recorded for this consultation.' NEVER fabricate content.\n"
+            f"- For follow-up questions about a previously mentioned consultation, ALWAYS re-fetch it using get_consultation_with_tests. Do NOT rely on conversation history alone.\n"
         )
     elif role.lower() == "patient":
         return base + (
@@ -149,9 +171,13 @@ async def _execute_tool(
         # ── Role-based access enforcement ────────────────────────────────
         if role.lower() == "patient":
             # Force patient to only see own data
-            # For consultations, use patient_profile_id not user_id
-            if function_name in ("get_consultations", "get_patient_lab_results"):
-                # Get patient profile first to get the correct ID
+            # Consultation patient_id uses user_id (NOT patient_profile_id)
+            if function_name == "get_consultations":
+                arguments["patient_id"] = user_id  # consultation patient_id = user_id
+                arguments.pop("doctor_id", None)
+                arguments.pop("clinic_id", None)
+            elif function_name == "get_patient_lab_results":
+                # Lab results use patient_profile_id (not user_id)
                 try:
                     profile = await api_client.get_patient_profile_by_user_id(user_id)
                     if profile and isinstance(profile, dict) and profile.get("id"):
@@ -160,9 +186,6 @@ async def _execute_tool(
                         arguments["patient_id"] = user_id  # fallback
                 except Exception:
                     arguments["patient_id"] = user_id  # fallback
-                if function_name == "get_consultations":
-                    arguments.pop("doctor_id", None)
-                    arguments.pop("clinic_id", None)
             elif function_name == "get_patient_details":
                 arguments["user_id"] = user_id
             elif function_name in ("get_all_patients", "get_all_doctors", "get_all_users",
@@ -337,6 +360,20 @@ _NARRATION_PATTERNS = [
     re.compile(r"^.*?I'll (?:fetch|get|check|call|look)\b.*?\.\s*\n?", re.IGNORECASE),
 ]
 
+# Patterns that detect the model simulating tool calls in text instead of using the protocol
+_FAKE_TOOL_CALL_PATTERN = re.compile(
+    r'(?:'
+    r'<function=\w+>|'                     # <function=get_all_clinics>
+    r'\*\s*get_\w+\(|'                     # * get_all_patients(
+    r'get_\w+\([^)]*\)\s*$|'              # get_consultations(...) at end of line
+    r'Please wait for the result|'         # "Please wait for the result..."
+    r'I\'ll search for|'                   # "I'll search for..."
+    r'First,? I\'ll (?:get|search|fetch)|' # "First, I'll get..."
+    r'Next,? I\'ll (?:get|search|fetch)'   # "Next, I'll get..."
+    r')',
+    re.IGNORECASE | re.MULTILINE
+)
+
 
 def _clean_response(text: str) -> str:
     """Strip narration / thinking prefixes from the LLM's final response."""
@@ -344,6 +381,14 @@ def _clean_response(text: str) -> str:
     for pattern in _NARRATION_PATTERNS:
         cleaned = pattern.sub("", cleaned, count=1).strip()
     return cleaned or text
+
+
+def _is_fake_tool_response(text: str) -> bool:
+    """Detect if the model is simulating tool calls in its text response instead of using the protocol."""
+    if not text:
+        return False
+    matches = _FAKE_TOOL_CALL_PATTERN.findall(text)
+    return len(matches) >= 1
 
 
 async def chat(
@@ -366,7 +411,7 @@ async def chat(
         kwargs = {
             "model": GROQ_MODEL,
             "messages": full_messages,
-            "temperature": 0.1,  # Lower temperature for more consistent function calling
+            "temperature": 0,  # Zero temperature for deterministic, reliable function calling
         }
         if tools:
             kwargs["tools"] = tools
@@ -378,18 +423,8 @@ async def chat(
         except Exception as e:
             error_msg = str(e)
             print(f"[Chat Error] {error_msg}")
-            # If tool calling failed, try without tools as fallback
-            if "tool" in error_msg.lower() or "function" in error_msg.lower():
-                try:
-                    fallback_response = await client.chat.completions.create(
-                        model=GROQ_MODEL,
-                        messages=full_messages,
-                        temperature=0.1,
-                    )
-                    return fallback_response.choices[0].message.content or "I apologize, but I encountered a technical issue. Please try rephrasing your question."
-                except Exception:
-                    pass
-            return f"I encountered an error while processing your request. Please try again or rephrase your question."
+            # Do NOT fall back to no-tools mode — that causes hallucinated fake tool calls
+            return "I encountered a temporary issue connecting to the AI service. Please try again in a moment."
         
         choice = response.choices[0]
 
@@ -452,6 +487,24 @@ async def chat(
 
         # No tool calls — return the text response
         reply = choice.message.content or "I'm sorry, I couldn't generate a response. Please try again."
+        
+        # Detect if the model is simulating fake tool calls in text (hallucination)
+        if _is_fake_tool_response(reply):
+            print(f"[WARN] Detected fake tool call in text response, retrying with correction...")
+            # Add a correction message and retry
+            full_messages.append({"role": "assistant", "content": reply})
+            full_messages.append({
+                "role": "user",
+                "content": (
+                    "STOP. You are generating fake data. Do NOT simulate tool calls in text. "
+                    "Do NOT write function names like get_all_patients() in your response. "
+                    "Do NOT make up data. "
+                    "You MUST use the actual tool calling mechanism to fetch real data. "
+                    "Try again — call the appropriate tool function properly."
+                )
+            })
+            continue
+        
         return _clean_response(reply)
 
     return "I've reached the maximum number of processing steps. Please try simplifying your question."

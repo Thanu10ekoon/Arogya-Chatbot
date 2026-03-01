@@ -11,7 +11,14 @@ TOOL_GET_ALL_PATIENTS = {
     "type": "function",
     "function": {
         "name": "get_all_patients",
-        "description": "Get a list of ALL patient profiles including their names, NIC, blood group, allergies, chronic diseases, address, gender, emergency contact, date of birth, and phone number. Use this for bulk analysis or when asked about patient statistics.",
+        "description": (
+            "Get a list of ALL patient profiles. Each profile includes: firstName, lastName, nicNumber, bloodGroup, "
+            "allergies, chronicDiseases, address, gender, dateOfBirth, phoneNumber, emergencyContact, "
+            "and a NESTED 'user' object containing the patient's user_id (user.id), username (user.username), "
+            "and email (user.email). "
+            "IMPORTANT: To find a patient by USERNAME, search the 'user.username' field in the results. "
+            "The 'user.id' field is the patient's user_id which is used as patient_id in consultations."
+        ),
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
 }
@@ -98,11 +105,16 @@ TOOL_GET_CONSULTATIONS = {
     "type": "function",
     "function": {
         "name": "get_consultations",
-        "description": "Get consultations with optional filtering. Can filter by patient ID, doctor ID, clinic ID, or status (SCHEDULED/IN_PROGRESS/COMPLETED/CANCELLED). Returns chief complaint, present illness, past medical history, recommendations, session number, and timestamps.",
+        "description": (
+            "Get consultations with optional filtering. Can filter by patient_id, doctor_id, clinic_id, or status. "
+            "IMPORTANT: patient_id here is the patient's USER ID (user.id from users table), NOT the patient profile ID. "
+            "To find consultations for a patient, use the user_id you found from get_all_patients (user.id field) or get_all_users. "
+            "Returns chief complaint, present illness, past medical history, recommendations, session number, and timestamps."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "patient_id": {"type": "integer", "description": "Filter by patient's user ID"},
+                "patient_id": {"type": "integer", "description": "Filter by patient's USER ID (user.id from users table, NOT the patient profile id)"},
                 "doctor_id": {"type": "integer", "description": "Filter by doctor's user ID"},
                 "clinic_id": {"type": "integer", "description": "Filter by clinic ID"},
                 "status": {
@@ -178,7 +190,12 @@ TOOL_GET_ALL_USERS = {
     "type": "function",
     "function": {
         "name": "get_all_users",
-        "description": "Get a list of all registered users including their usernames, emails, and roles (patient/doctor/admin/technician).",
+        "description": (
+            "Get a list of all registered users with their id (user_id), username, email, and role. "
+            "Use this to look up a patient's user_id by their username. "
+            "The user 'id' returned here is the same as 'patient_id' used in the consultations table. "
+            "Example: if a user has id=20 and username='yrcd27', use patient_id=20 in get_consultations."
+        ),
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
 }
@@ -322,6 +339,8 @@ ADMIN_TOOLS = [
 
 DOCTOR_TOOLS = [
     TOOL_GET_MY_PROFILE,
+    TOOL_GET_ALL_USERS,       # needed for username-based patient lookup
+    TOOL_GET_ALL_PATIENTS,    # needed so doctors can search patients by NIC/name
     TOOL_GET_PATIENT_DETAILS,
     TOOL_GET_ALL_CLINICS,
     TOOL_GET_CLINIC_DETAILS,
