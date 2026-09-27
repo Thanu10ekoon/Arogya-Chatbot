@@ -1,510 +1,509 @@
 """
-Core chat engine: manages conversations with Grok, executes tool calls,
-enforces role-based access, and supports analytical queries.
+Core chat engine for Arogya AI Chatbot.
+Uses Groq (qwen/qwen3.8-27b primary) with Gemini fallback.
+Supports tool-calling (function calling) for real-time backend data.
 """
 
 import json
+import re
 import traceback
 from datetime import datetime
 from difflib import SequenceMatcher
 from openai import AsyncOpenAI
 
 import api_client
-from config import GROQ_API_KEY, GROQ_MODEL
+from config import (
+    GROQ_API_KEY,
+    GROQ_PRIMARY_MODEL,
+    GROQ_FALLBACK_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+)
 from tools import get_tools_for_role
 
-client = AsyncOpenAI(
+# ---------------------------------------------------------------------------
+# LLM Clients
+# ---------------------------------------------------------------------------
+groq_client = AsyncOpenAI(
     api_key=GROQ_API_KEY,
     base_url="https://api.groq.com/openai/v1",
 )
 
-MAX_TOOL_ROUNDS = 6  # prevent infinite loops
+gemini_client = AsyncOpenAI(
+    api_key=GEMINI_API_KEY,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+
+MAX_TOOL_ROUNDS = 8
 
 
-def _build_system_prompt(role: str, user_id: int) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
-    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    base = (
-        f"You are Arogya AI, a helpful healthcare assistant for the Arogya mobile clinic management system in Sri Lanka. "
-        f"You are friendly, professional, and concise. You can answer general health questions, "
-        f"help users navigate the system, and fetch real-time data from the backend when asked.\n\n"
-        f"CURRENT DATE AND TIME: {current_datetime} (Today is {today})\n\n"
-        f"CRITICAL FUNCTION CALLING RULES:\n"
-        f"1. When you need to fetch data, ONLY call the function - do NOT generate or invent the response data.\n"
-        f"2. After calling a function, WAIT for the result. Do NOT continue writing or make up example data.\n"
-        f"3. NEVER include sample data, placeholders, or made-up responses in your function calls.\n"
-        f"4. Once you receive the tool result, THEN format and present it to the user.\n\n"
-        f"DATE-BASED ANALYSIS RULES:\n"
-        f"5. When asked about 'completed' events, compare the scheduled_date with today's date ({today}).\n"
-        f"6. An event/clinic is considered COMPLETED if its scheduled_date is BEFORE today ({today}), regardless of its status field.\n"
-        f"7. An event/clinic is considered UPCOMING if its scheduled_date is ON or AFTER today ({today}).\n"
-        f"8. When analyzing dates, be precise. For queries like 'December 2025', only count records with dates in that specific month/year.\n\n"
-        f"DATA HANDLING RULES:\n"
-        f"9. Do NOT make up patient names, doctor names, IDs, clinic names, dates, or any medical data. If a tool returns an error or empty results, tell the user no data was found — NEVER fabricate or guess names.\n"
-        f"10. Present data in a clear, readable format (use bullet points or numbered lists when appropriate).\n"
-        f"11. For analytical questions (trends, predictions, comparisons), fetch the relevant data first, then analyze it thoroughly.\n"
-        f"12. If a backend service returns an error, inform the user clearly that the service is unavailable. Do NOT expose raw error details.\n"
-        f"13. Keep responses concise but complete.\n"
-        f"14. Never expose raw JSON to the user; always format it nicely.\n"
-        f"15. For small talk, greetings, or general questions about Arogya (what it is, how it works, its features, etc.), respond naturally from your own knowledge WITHOUT calling any tools. "
-        f"You already know that Arogya is a mobile clinic management system for Sri Lanka that handles clinics, patient records, consultations, lab tests, doctor management, and queue management.\n"
-        f"16. ONLY call get_my_profile when the user EXPLICITLY asks to see their own profile, personal details, or account information. Do NOT call it for general questions.\n"
-        f"17. CRITICAL: For follow-up questions about details of previously mentioned data (e.g., 'what did I recommend?', 'what was the diagnosis?'), "
-        f"you MUST call the appropriate tool again (e.g., get_consultation_with_tests) to fetch the full record. "
-        f"Do NOT answer from the conversation history alone — the earlier response may have been summarized. "
-        f"NEVER invent or fabricate field values like recommendations, diagnoses, complaints, or dates.\n\n"
-        f"RESPONSE STYLE RULES:\n"
-        f"17. NEVER show your internal reasoning, intermediate steps, or thinking process to the user.\n"
-        f"18. NEVER display raw JSON, tool call details, clinic IDs, or API results in your response.\n"
-        f"19. NEVER say phrases like 'I'm calling...', 'Let me fetch...', 'I need to first get...', 'Calling X...', 'I will use...', 'I'm fetching...' etc.\n"
-        f"20. ONLY present the FINAL, user-friendly answer AFTER you have the data. Skip ALL narration and go straight to the answer.\n\n"
-        f"CLINIC NAME RESOLUTION RULES:\n"
-        f"21. Users refer to clinics by NAME (e.g., 'Kalutara clinic', 'Kandy Mobile Clinic'), NOT by numeric ID.\n"
-        f"22. When a user asks about a specific clinic by name, pass the clinic name directly as the clinic_id parameter (e.g., clinic_id='Kalutara'). The system will automatically resolve it to the correct numeric ID. Do NOT guess a numeric ID.\n"
-        f"23. If no clinic matches the name, tell the user the clinic was not found and suggest calling get_all_clinics.\n"
-        f"24. NEVER invent or fabricate doctor names. Only present doctor names that appear in the tool response data.\n"
-    )
-
-    if role.lower() == "admin":
-        return base + (
-            f"\nThe current user is an ADMIN (user ID: {user_id}). "
-            "Admins have full access to all patient records, all clinics, all consultations, all doctors, and all analytics. "
-            "When asked analytical questions (e.g., 'Will this area have more diabetic patients next year?'), "
-            "fetch all patient data, examine chronic diseases and addresses, and provide a data-driven analysis with reasoning. "
-            "You can also provide system-wide statistics and summaries."
-        )
-    elif role.lower() == "doctor":
-        return base + (
-            f"\nThe current user is a DOCTOR (user ID: {user_id}). "
-            f"Doctors can view their own profile, see patient details, view consultations (their own and their patients'), "
-            f"view clinic information, check queues, and see lab test results. "
-            f"When fetching your own consultations, ALWAYS use doctor_id={user_id}.\n\n"
-            f"CRITICAL CROSS-SERVICE DATA LINKING RULES:\n"
-            f"- The system has SEPARATE databases for users and consultations. To find a patient's consultations, you MUST first find their USER ID.\n"
-            f"- STEP 1: To find a patient by USERNAME (e.g., 'yrcd27'), call get_all_users or get_all_patients. "
-            f"In get_all_users, the 'id' field IS the user_id. "
-            f"In get_all_patients, each patient profile has a nested 'user' object — the USERNAME is in 'user.username' and the USER ID is in 'user.id'.\n"
-            f"- STEP 2: Use the USER ID (user.id) as the patient_id parameter when calling get_consultations. "
-            f"Example: if user.id=20 for username 'yrcd27', call get_consultations(doctor_id={user_id}, patient_id=20).\n"
-            f"- IMPORTANT: The 'id' field directly on a patient profile is the PROFILE ID, NOT the user_id. Always use 'user.id' (the nested user's id) as patient_id for consultations.\n"
-            f"- To find a patient by FIRST NAME or LAST NAME, call get_all_patients and search the 'firstName' and 'lastName' fields.\n"
-            f"- To find a patient by NIC, call get_all_patients and search the 'nicNumber' field.\n\n"
-            f"DOCTOR-SPECIFIC RULES:\n"
-            f"- When asked 'did I consult patient X?', FIRST find the patient's user_id (via get_all_users or get_all_patients), "
-            f"THEN call get_consultations with doctor_id={user_id} and patient_id=<found_user_id>. "
-            f"If consultations are found, answer YES with details. If empty, answer NO.\n"
-            f"- If no patient matches the search, say the patient was not found. NEVER guess or invent patient details.\n"
-            f"- When asked about recommendations, prescriptions, complaints, or any consultation details, you MUST call get_consultation_with_tests using the consultation ID to fetch the FULL record. "
-            f"Read the EXACT field values from the response. If a field (like 'recommendations') is null or empty, say 'No recommendations were recorded for this consultation.' NEVER fabricate content.\n"
-            f"- For follow-up questions about a previously mentioned consultation, ALWAYS re-fetch it using get_consultation_with_tests. Do NOT rely on conversation history alone.\n"
-        )
-    elif role.lower() == "patient":
-        return base + (
-            f"\nThe current user is a PATIENT (user ID: {user_id}). "
-            "CRITICAL: Patients can ONLY access their OWN data. "
-            "The backend will automatically filter consultations and lab results to show only your data, so you can call these functions without specifying IDs. "
-            "Patients can also browse available clinics. "
-            "NEVER fetch or reveal other patients' data.\n\n"
-            "QUEUE POSITION RULES:\n"
-            "When a patient asks about their queue position, call get_clinic_queue. "
-            "The result will contain a '_current_user_tokens' field that shows ONLY the tokens belonging to this patient. "
-            "Use THAT data to report the patient's position accurately. "
-            "Do NOT guess or count manually — ONLY use the '_current_user_tokens' data."
-        )
-    return base
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _is_rate_limit(err: str) -> bool:
+    msg = err.lower()
+    return "rate limit" in msg or "rate_limit" in msg or "429" in msg
 
 
-# ── Clinic name → ID fuzzy resolver ─────────────────────────────────────────
-
-async def _resolve_clinic_id(name: str) -> str | None:
-    """
-    Fuzzy-match a user-provided clinic name to a numeric clinic ID.
-    Returns the ID as a string, or None if no match found.
-    """
-    clinics = await api_client.get_all_clinics()
-    if not isinstance(clinics, list) or not clinics:
-        return None
-
-    name_lower = name.lower().strip()
-
-    # 1. Try exact match first
-    for c in clinics:
-        if c.get("clinicName", "").lower() == name_lower:
-            return str(c["id"])
-
-    # 2. Try substring / contains match
-    for c in clinics:
-        clinic_name = c.get("clinicName", "").lower()
-        if name_lower in clinic_name or clinic_name in name_lower:
-            return str(c["id"])
-
-    # 3. Fuzzy match using SequenceMatcher
-    best_score = 0.0
-    best_id = None
-    for c in clinics:
-        clinic_name = c.get("clinicName", "").lower()
-        score = SequenceMatcher(None, name_lower, clinic_name).ratio()
-        # Also check against parts (e.g., "kalutara" vs "Kalutara Mobile Clinic")
-        for word in name_lower.split():
-            word_score = SequenceMatcher(None, word, clinic_name.split()[0] if clinic_name.split() else "").ratio()
-            score = max(score, word_score)
-        if score > best_score:
-            best_score = score
-            best_id = str(c["id"])
-
-    if best_score >= 0.6:
-        return best_id
-
-    return None
+def _is_quota(err: str) -> bool:
+    msg = err.lower()
+    return "quota" in msg or "resource_exhausted" in msg or "429" in msg
 
 
-async def _execute_tool(
-    function_name: str,
-    arguments: dict,
-    role: str,
-    user_id: int,
-) -> str:
-    """Execute a tool call and return the result as a JSON string."""
+_NARRATION_RE = re.compile(
+    r"^(I('m| will| am going to| shall|'ll) (call|fetch|get|check|look up|retrieve|use)|"
+    r"Let me (call|fetch|get|check|look up|retrieve)|Calling \w+).*?\n?",
+    re.IGNORECASE | re.MULTILINE,
+)
 
-    try:
-        # ── Role-based access enforcement ────────────────────────────────
-        if role.lower() == "patient":
-            # Force patient to only see own data
-            # Consultation patient_id uses user_id (NOT patient_profile_id)
-            if function_name == "get_consultations":
-                arguments["patient_id"] = user_id  # consultation patient_id = user_id
-                arguments.pop("doctor_id", None)
-                arguments.pop("clinic_id", None)
-            elif function_name == "get_patient_lab_results":
-                # Lab results use patient_profile_id (not user_id)
-                try:
-                    profile = await api_client.get_patient_profile_by_user_id(user_id)
-                    if profile and isinstance(profile, dict) and profile.get("id"):
-                        arguments["patient_id"] = profile["id"]
-                    else:
-                        arguments["patient_id"] = user_id  # fallback
-                except Exception:
-                    arguments["patient_id"] = user_id  # fallback
-            elif function_name == "get_patient_details":
-                arguments["user_id"] = user_id
-            elif function_name in ("get_all_patients", "get_all_doctors", "get_all_users",
-                                   "get_all_technicians", "get_all_test_results"):
-                return json.dumps({"error": "Access denied. Patients cannot view other users' data."})
-
-        # ── Clinic name → ID resolution ──────────────────────────────────
-        # If get_clinic_queue / get_clinic_details / get_clinic_doctors was
-        # called with a non-numeric clinic_id (i.e. a name), resolve it.
-        if function_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors"):
-            raw_id = str(arguments.get("clinic_id", ""))
-            # Also grab any stray clinic_name the LLM might have invented
-            raw_name = arguments.pop("clinic_name", None)
-            lookup = raw_name or raw_id
-
-            if not lookup.isdigit():
-                resolved = await _resolve_clinic_id(lookup)
-                if resolved is None:
-                    return json.dumps({
-                        "error": f"No clinic found matching '{lookup}'. "
-                                 "Call get_all_clinics to see the full list."
-                    })
-                arguments["clinic_id"] = resolved
-                print(f"[Clinic Resolve] '{lookup}' → ID {resolved}")
-
-        # ── Dispatch to API client ───────────────────────────────────────
-        result = None
-
-        if function_name == "get_all_patients":
-            result = await api_client.get_all_patients()
-
-        elif function_name == "get_patient_details":
-            result = await api_client.get_patient_profile_by_user_id(arguments["user_id"])
-
-        elif function_name == "get_all_doctors":
-            result = await api_client.get_all_doctors()
-
-        elif function_name == "get_all_clinics":
-            result = await api_client.get_all_clinics()
-
-        elif function_name == "get_clinic_details":
-            result = await api_client.get_clinic(int(arguments["clinic_id"]))
-
-        elif function_name == "get_clinic_doctors":
-            result = await api_client.get_clinic_doctors(int(arguments["clinic_id"]))
-
-        elif function_name == "get_clinic_queue":
-            result = await api_client.get_clinic_queue(str(arguments["clinic_id"]))
-            # Annotate which tokens belong to the current user so the LLM
-            # can accurately report "your position" instead of guessing.
-            if role.lower() == "patient" and isinstance(result, list):
-                try:
-                    profile = await api_client.get_patient_profile_by_user_id(user_id)
-                    patient_profile_id = profile.get("id") if isinstance(profile, dict) else None
-                    if patient_profile_id is not None:
-                        my_tokens = []
-                        for token in result:
-                            pid = token.get("patientId") or token.get("patient_id")
-                            if pid is not None and int(pid) == int(patient_profile_id):
-                                token["_is_current_user"] = True
-                                my_tokens.append({
-                                    "token_number": token.get("tokenNumber"),
-                                    "position": token.get("position"),
-                                    "status": token.get("status"),
-                                })
-                        result = {
-                            "queue": result,
-                            "_current_user_tokens": my_tokens if my_tokens else "You do not have any tokens in this clinic's queue.",
-                            "_note": "Tokens marked with _is_current_user=True belong to the currently logged-in patient. Use these to report their queue position accurately."
-                        }
-                except Exception:
-                    pass  # fall through with unmodified result
-
-        elif function_name == "get_consultations":
-            result = await api_client.get_consultations(
-                patient_id=arguments.get("patient_id"),
-                doctor_id=arguments.get("doctor_id"),
-                clinic_id=arguments.get("clinic_id"),
-                status=arguments.get("status"),
-            )
-
-        elif function_name == "get_consultation":
-            result = await api_client.get_consultation(arguments["consultation_id"])
-
-        elif function_name == "get_consultation_with_tests":
-            result = await api_client.get_consultation_with_tests(arguments["consultation_id"])
-
-        elif function_name == "get_lab_tests":
-            result = await api_client.get_lab_tests(
-                status=arguments.get("status"),
-                technician_id=arguments.get("technician_id"),
-            )
-
-        elif function_name == "get_lab_tests_by_consultation":
-            result = await api_client.get_lab_tests_by_consultation(arguments["consultation_id"])
-
-        elif function_name == "get_patient_lab_results":
-            result = await api_client.get_test_results_by_patient(arguments["patient_id"])
-
-        elif function_name == "get_test_result":
-            result = await api_client.get_test_result(arguments["test_result_id"])
-
-        elif function_name == "get_test_result_by_lab_test":
-            result = await api_client.get_test_result_by_lab_test(arguments["lab_test_id"])
-
-        elif function_name == "get_all_test_results":
-            result = await api_client.get_all_test_results()
-
-        elif function_name == "get_queue_token":
-            result = await api_client.get_queue_token(arguments["token_id"])
-
-        elif function_name == "get_all_technicians":
-            result = await api_client.get_all_technicians()
-
-        elif function_name == "get_doctor_profile":
-            result = await api_client.get_doctor_profile(arguments["doctor_id"])
-
-        elif function_name == "get_my_profile":
-            if role.lower() == "doctor":
-                result = await api_client.get_doctor_profile_by_user_id(user_id)
-            elif role.lower() == "patient":
-                result = await api_client.get_patient_profile_by_user_id(user_id)
-            elif role.lower() == "admin":
-                try:
-                    result = await api_client.get_admin_profile_by_user_id(user_id)
-                except Exception:
-                    result = await api_client.get_user(user_id)
-
-        elif function_name == "get_all_users":
-            result = await api_client.get_all_users()
-
-        else:
-            return json.dumps({"error": f"Unknown tool: {function_name}"})
-
-        # ── Annotate empty results so LLM doesn't confuse them with errors ──
-        if result is None:
-            return json.dumps({"data": None, "message": "No data found. The record may not exist."})
-        if isinstance(result, list) and len(result) == 0:
-            return json.dumps({"data": [], "message": f"No records found for {function_name}. This is not an error — there is simply no data matching the query."})
-
-        # Truncate very large results to avoid token limits
-        result_str = json.dumps(result, default=str)
-        if len(result_str) > 30000:
-            # Summarize: keep first 60 items if it's a list
-            if isinstance(result, list) and len(result) > 60:
-                truncated = result[:60]
-                result_str = json.dumps(
-                    {"data": truncated, "_note": f"Showing 60 of {len(result)} records. Analyze based on this sample."},
-                    default=str,
-                )
-            else:
-                result_str = result_str[:30000] + '..."truncated"}'
-
-        return result_str
-
-    except Exception as e:
-        traceback.print_exc()
-        return json.dumps({"error": f"Failed to execute {function_name}: {str(e)}"})
-
-
-import re
-
-# Patterns that indicate narration / thinking leaking into the final response
-_NARRATION_PATTERNS = [
-    re.compile(r"^.*?I'm calling\b.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?I will call\b.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?Let me (?:fetch|get|check|call|look)\b.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?I need to first\b.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?Calling \w+.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?I'm fetching\b.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?I will use\b.*?\.\s*\n?", re.IGNORECASE),
-    re.compile(r"^.*?I'll (?:fetch|get|check|call|look)\b.*?\.\s*\n?", re.IGNORECASE),
-]
-
-# Patterns that detect the model simulating tool calls in text instead of using the protocol
-_FAKE_TOOL_CALL_PATTERN = re.compile(
-    r'(?:'
-    r'<function=\w+>|'                     # <function=get_all_clinics>
-    r'\*\s*get_\w+\(|'                     # * get_all_patients(
-    r'get_\w+\([^)]*\)\s*$|'              # get_consultations(...) at end of line
-    r'Please wait for the result|'         # "Please wait for the result..."
-    r'I\'ll search for|'                   # "I'll search for..."
-    r'First,? I\'ll (?:get|search|fetch)|' # "First, I'll get..."
-    r'Next,? I\'ll (?:get|search|fetch)'   # "Next, I'll get..."
-    r')',
-    re.IGNORECASE | re.MULTILINE
+_FAKE_TOOL_RE = re.compile(
+    r"(<function=\w+>|get_\w+\([^)]*\)\s*$)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
 def _clean_response(text: str) -> str:
-    """Strip narration / thinking prefixes from the LLM's final response."""
-    cleaned = text.strip()
-    for pattern in _NARRATION_PATTERNS:
-        cleaned = pattern.sub("", cleaned, count=1).strip()
-    return cleaned or text
-
-
-def _is_fake_tool_response(text: str) -> bool:
-    """Detect if the model is simulating tool calls in its text response instead of using the protocol."""
     if not text:
-        return False
-    matches = _FAKE_TOOL_CALL_PATTERN.findall(text)
-    return len(matches) >= 1
+        return text
+    text = _NARRATION_RE.sub("", text).strip()
+    return text
 
 
-async def chat(
-    messages: list[dict],
-    role: str,
-    user_id: int,
-) -> str:
+def _is_fake_tool_call(text: str) -> bool:
+    return bool(text and _FAKE_TOOL_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# LLM call with provider fallback chain
+# ---------------------------------------------------------------------------
+async def _llm_call(**kwargs) -> object:
     """
-    Run a multi-turn chat with Grok, automatically handling tool calls.
-    Returns the final assistant text response.
+    Try Groq primary -> Groq 120b fallback -> Gemini.
+    Retries on rate limits, quota errors, tool_use_failed, and model errors.
     """
+    # Fallback chain: Primary -> Fallback -> Gemini
+    providers = [
+        (groq_client, GROQ_PRIMARY_MODEL, "Groq-primary"),
+        (groq_client, GROQ_FALLBACK_MODEL, "Groq-fallback"),
+        (gemini_client, GEMINI_MODEL, "Gemini"),
+    ]
 
-    system_prompt = _build_system_prompt(role, user_id)
-    tools = get_tools_for_role(role)
-
-    # Build the full message list with system prompt
-    full_messages = [{"role": "system", "content": system_prompt}] + messages
-
-    for _round in range(MAX_TOOL_ROUNDS):
-        kwargs = {
-            "model": GROQ_MODEL,
-            "messages": full_messages,
-            "temperature": 0,  # Zero temperature for deterministic, reliable function calling
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-            kwargs["parallel_tool_calls"] = False  # Force sequential tool calls
-
+    last_err = None
+    for client, model, name in providers:
+        if not model or not (client.api_key or "").strip():
+            continue
         try:
-            response = await client.chat.completions.create(**kwargs)
+            req = dict(kwargs)
+            req["model"] = model
+            # Remove parallel_tool_calls for Gemini (unsupported)
+            if name == "Gemini":
+                req.pop("parallel_tool_calls", None)
+            response = await client.chat.completions.create(**req)
+            print(f"[LLM] Used {name} ({model})")
+            return response
         except Exception as e:
-            error_msg = str(e)
-            print(f"[Chat Error] {error_msg}")
-            # Do NOT fall back to no-tools mode — that causes hallucinated fake tool calls
-            return "I encountered a temporary issue connecting to the AI service. Please try again in a moment."
-        
-        choice = response.choices[0]
+            err = str(e)
+            print(f"[{name} Error] {err[:200]}")
+            last_err = e
+            # Continue to next provider on rate-limit, quota, model, or tool_use_failed errors
+            err_lower = err.lower()
+            should_fallback = (
+                _is_rate_limit(err) or _is_quota(err)
+                or "model_not_found" in err_lower
+                or "model_decommissioned" in err_lower
+                or "does not exist" in err_lower
+                or "tool_use_failed" in err_lower
+            )
+            if not should_fallback:
+                break
 
-        # If the model wants to call tools
-        if choice.finish_reason == "tool_calls" or (choice.message.tool_calls and len(choice.message.tool_calls) > 0):
-            # Add the assistant message with tool calls (only include supported fields)
-            # Filter out null values from arguments to satisfy Groq's strict validation
-            tool_calls_cleaned = []
-            for tc in choice.message.tool_calls:
-                try:
-                    args_dict = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                    if args_dict is None:
-                        args_dict = {}
-                    # Remove null values - Groq rejects null for typed optional params
-                    args_dict_filtered = {k: v for k, v in args_dict.items() if v is not None}
-                    args_str = json.dumps(args_dict_filtered)
-                except (json.JSONDecodeError, AttributeError, TypeError):
-                    args_str = tc.function.arguments or "{}"
+    raise RuntimeError(f"All LLM providers failed. Last error: {last_err}")
+
+
+# ---------------------------------------------------------------------------
+# Intent classifier
+# ---------------------------------------------------------------------------
+async def _classify_intent(messages: list[dict]) -> str:
+    """Classify user intent as: tool | health | general"""
+    system = (
+        "You are a router. Output ONLY one word: tool, health, or general.\n"
+        "tool = user needs live data (clinics, queues, appointments, patients, consultations, lab results, users).\n"
+        "health = user asks a medical or health question (symptoms, treatments, medications, lifestyle).\n"
+        "general = greetings, small talk, app navigation questions."
+    )
+    router_msgs = [{"role": "system", "content": system}] + messages[-6:]
+    try:
+        resp = await _llm_call(messages=router_msgs, temperature=0, max_tokens=5)
+        label = (resp.choices[0].message.content or "general").strip().lower()
+        return label if label in ("tool", "health", "general") else "general"
+    except Exception:
+        return "general"
+
+
+# ---------------------------------------------------------------------------
+# Clinic name -> ID resolver
+# ---------------------------------------------------------------------------
+async def _resolve_clinic_id(name: str) -> str | None:
+    clinics = await api_client.get_all_clinics()
+    if not isinstance(clinics, list) or not clinics:
+        return None
+    name_lower = name.lower().strip()
+    # Exact match
+    for c in clinics:
+        if c.get("clinicName", "").lower() == name_lower:
+            return str(c["id"])
+    # Substring match
+    for c in clinics:
+        if name_lower in c.get("clinicName", "").lower():
+            return str(c["id"])
+    # Fuzzy match
+    best_score, best_id = 0.0, None
+    for c in clinics:
+        score = SequenceMatcher(None, name_lower, c.get("clinicName", "").lower()).ratio()
+        if score > best_score:
+            best_score, best_id = score, str(c["id"])
+    return best_id if best_score >= 0.55 else None
+
+
+# ---------------------------------------------------------------------------
+# Tool executor
+# ---------------------------------------------------------------------------
+async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> str:
+    try:
+        role_lower = role.lower()
+
+        # --- RBAC enforcement ---
+        if role_lower == "patient":
+            if fn_name in ("get_all_patients", "get_all_doctors", "get_all_users",
+                           "get_all_technicians", "get_all_test_results",
+                           "create_clinic", "update_clinic", "delete_clinic",
+                           "update_consultation", "complete_consultation", "cancel_consultation",
+                           "update_user", "delete_user"):
+                return json.dumps({"error": "Access denied. Patients cannot perform this action."})
+            if fn_name == "create_consultation":
+                # Force patient to only book for themselves
+                args["patientId"] = user_id
+        elif role_lower == "doctor":
+            if fn_name in ("create_clinic", "delete_clinic", "update_user", "delete_user"):
+                return json.dumps({"error": "Access denied. Doctors cannot perform this administrative action."})
                 
-                tool_calls_cleaned.append({
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": args_str,
-                    }
-                })
-            
-            assistant_msg = {
-                "role": "assistant",
-                "content": None,  # Strip intermediate thinking text — only the final response should have content
-                "tool_calls": tool_calls_cleaned
-            }
-            full_messages.append(assistant_msg)
-
-            # Execute each tool call
-            for tool_call in choice.message.tool_calls:
-                fn_name = tool_call.function.name
+        if role_lower == "patient":
+            if fn_name == "get_consultations":
+                args["patient_id"] = user_id
+                args.pop("doctor_id", None)
+                args.pop("clinic_id", None)
+            elif fn_name == "get_patient_lab_results":
                 try:
-                    fn_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-                    if fn_args is None:
+                    profile = await api_client.get_patient_profile_by_user_id(user_id)
+                    args["patient_id"] = profile.get("id", user_id) if isinstance(profile, dict) else user_id
+                except Exception:
+                    args["patient_id"] = user_id
+            elif fn_name == "get_patient_details":
+                args["user_id"] = user_id
+
+        # --- Clinic name -> ID resolution ---
+        if fn_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors"):
+            raw = str(args.get("clinic_id", "") or args.pop("clinic_name", ""))
+            if not raw.isdigit():
+                resolved = await _resolve_clinic_id(raw)
+                if not resolved:
+                    return json.dumps({"error": f"No clinic found matching '{raw}'. Use get_all_clinics to see available clinics."})
+                print(f"[Clinic Resolve] '{raw}' -> ID {resolved}")
+                args["clinic_id"] = resolved
+
+        # --- Dispatch ---
+        result = None
+
+        if fn_name == "get_all_patients":
+            result = await api_client.get_all_patients()
+        elif fn_name == "get_patient_details":
+            result = await api_client.get_patient_profile_by_user_id(args["user_id"])
+        elif fn_name == "get_all_doctors":
+            result = await api_client.get_all_doctors()
+        elif fn_name == "get_all_clinics":
+            result = await api_client.get_all_clinics()
+        elif fn_name == "get_clinic_details":
+            result = await api_client.get_clinic(int(args["clinic_id"]))
+        elif fn_name == "get_clinic_doctors":
+            result = await api_client.get_clinic_doctors(int(args["clinic_id"]))
+        elif fn_name == "get_clinic_queue":
+            result = await api_client.get_clinic_queue(str(args["clinic_id"]))
+            # Annotate patient's own tokens
+            if role_lower == "patient" and isinstance(result, list):
+                try:
+                    profile = await api_client.get_patient_profile_by_user_id(user_id)
+                    pid = profile.get("id") if isinstance(profile, dict) else None
+                    my_tokens = []
+                    if pid:
+                        for tok in result:
+                            if tok.get("patientId") and int(tok["patientId"]) == int(pid):
+                                tok["_is_current_user"] = True
+                                my_tokens.append({
+                                    "token_number": tok.get("tokenNumber"),
+                                    "position": tok.get("position"),
+                                    "status": tok.get("status"),
+                                })
+                    result = {
+                        "queue": result,
+                        "_current_user_tokens": my_tokens or "You have no tokens in this queue.",
+                    }
+                except Exception:
+                    pass
+        elif fn_name == "get_consultations":
+            result = await api_client.get_consultations(
+                patient_id=args.get("patient_id"),
+                doctor_id=args.get("doctor_id"),
+                clinic_id=args.get("clinic_id"),
+                status=args.get("status"),
+            )
+        elif fn_name == "get_consultation":
+            result = await api_client.get_consultation(args["consultation_id"])
+        elif fn_name == "get_consultation_with_tests":
+            result = await api_client.get_consultation_with_tests(args["consultation_id"])
+        elif fn_name == "get_lab_tests":
+            result = await api_client.get_lab_tests(
+                status=args.get("status"),
+                technician_id=args.get("technician_id"),
+            )
+        elif fn_name == "get_lab_tests_by_consultation":
+            result = await api_client.get_lab_tests_by_consultation(args["consultation_id"])
+        elif fn_name == "get_patient_lab_results":
+            result = await api_client.get_test_results_by_patient(args["patient_id"])
+        elif fn_name == "get_test_result":
+            result = await api_client.get_test_result(args["test_result_id"])
+        elif fn_name == "get_test_result_by_lab_test":
+            result = await api_client.get_test_result_by_lab_test(args["lab_test_id"])
+        elif fn_name == "get_all_test_results":
+            result = await api_client.get_all_test_results()
+        elif fn_name == "get_queue_token":
+            result = await api_client.get_queue_token(args["token_id"])
+        elif fn_name == "get_all_technicians":
+            result = await api_client.get_all_technicians()
+        elif fn_name == "get_doctor_profile":
+            result = await api_client.get_doctor_profile(args["doctor_id"])
+        elif fn_name == "get_my_profile":
+            if role_lower == "doctor":
+                result = await api_client.get_doctor_profile_by_user_id(user_id)
+            elif role_lower == "patient":
+                result = await api_client.get_patient_profile_by_user_id(user_id)
+            elif role_lower == "admin":
+                try:
+                    result = await api_client.get_admin_profile_by_user_id(user_id)
+                except Exception:
+                    result = await api_client.get_user(user_id)
+        elif fn_name == "get_all_users":
+            result = await api_client.get_all_users()
+        elif fn_name == "create_clinic":
+            result = await api_client.create_clinic(args)
+        elif fn_name == "update_clinic":
+            result = await api_client.update_clinic(args["clinic_id"], args.get("data", {}))
+        elif fn_name == "delete_clinic":
+            result = await api_client.delete_clinic(args["clinic_id"])
+        elif fn_name == "create_consultation":
+            result = await api_client.create_consultation(args)
+        elif fn_name == "update_consultation":
+            cid = args.pop("consultation_id")
+            result = await api_client.update_consultation(cid, args)
+        elif fn_name == "complete_consultation":
+            result = await api_client.complete_consultation(args["consultation_id"])
+        elif fn_name == "cancel_consultation":
+            result = await api_client.cancel_consultation(args["consultation_id"])
+        elif fn_name == "update_user":
+            result = await api_client.update_user(args["user_id"], args.get("data", {}))
+
+        else:
+            return json.dumps({"error": f"Unknown tool: {fn_name}"})
+
+        # Annotate empty/none results
+        if result is None:
+            return json.dumps({"data": None, "message": "No data found."})
+        if isinstance(result, list) and len(result) == 0:
+            return json.dumps({"data": [], "message": f"No records found for {fn_name}."})
+
+        # Truncate large results aggressively to stay under ITPM limits on Groq free tier
+        result_str = json.dumps(result, default=str)
+        MAX_RESULT_CHARS = 8000  # Keep payloads small to avoid rate limits
+        if len(result_str) > MAX_RESULT_CHARS:
+            if isinstance(result, list):
+                # Keep trimming until it fits
+                limit = min(30, len(result))
+                while limit > 1:
+                    trimmed_str = json.dumps(
+                        {"data": result[:limit], "_note": f"Showing {limit} of {len(result)} records."},
+                        default=str,
+                    )
+                    if len(trimmed_str) <= MAX_RESULT_CHARS:
+                        result_str = trimmed_str
+                        break
+                    limit = limit // 2
+            else:
+                result_str = result_str[:MAX_RESULT_CHARS] + '..."truncated"}'
+        return result_str
+
+    except Exception as e:
+        traceback.print_exc()
+        return json.dumps({"error": f"Tool {fn_name} failed: {str(e)}"})
+
+
+# ---------------------------------------------------------------------------
+# System prompt builder
+# ---------------------------------------------------------------------------
+def _build_system_prompt(role: str, user_id: int) -> str:
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    base = (
+        f"You are Arogya AI, a healthcare assistant for the Arogya mobile clinic management system in Sri Lanka. "
+        f"You are friendly, professional, and concise. Current date/time: {today}.\n\n"
+        f"CRITICAL RULES:\n"
+        f"- NEVER invent or fabricate data. Only use data returned by tool calls.\n"
+        f"- NEVER narrate your tool usage (do not say 'Let me call get_all_clinics', just call it).\n"
+        f"- If a tool returns empty data, say so clearly.\n"
+        f"- Always use tools when live data is needed. Do not guess.\n"
+        f"- When a user requests an action (like creating a clinic or scheduling a consultation), check the required parameters for the corresponding tool. If any are missing, ask the user to provide them BEFORE calling the tool. Do not invent missing values.\n"
+    )
+    role_lower = role.lower()
+    if role_lower == "admin":
+        return base + (
+            f"\nThe current user is an ADMIN (user ID: {user_id}). "
+            "Admins have full access: all patients, doctors, clinics, queues, consultations, lab results, and users."
+        )
+    elif role_lower == "doctor":
+        return base + (
+            f"\nThe current user is a DOCTOR (user ID: {user_id}). "
+            "Doctors can view patient details, their own consultations (doctor_id={user_id}), "
+            "clinic queues, and lab results. They cannot view other doctors private data.\n"
+            "When asked about your own consultations, use doctor_id={user_id} in get_consultations."
+        ).format(user_id=user_id)
+    elif role_lower == "patient":
+        return base + (
+            f"\nThe current user is a PATIENT (user ID: {user_id}). "
+            "Patients can ONLY see their own data. "
+            "When fetching consultations or lab results, the system will automatically scope to this patient. "
+            "Patients can browse available clinics."
+        )
+    return base + f"\nThe current user has role '{role}' (user ID: {user_id})."
+
+
+# ---------------------------------------------------------------------------
+# Tool-calling loop
+# ---------------------------------------------------------------------------
+async def _run_tool_loop(full_messages: list[dict], tools: list[dict], role: str, user_id: int) -> str:
+    retry_no_tool = False
+    for round_num in range(MAX_TOOL_ROUNDS):
+        try:
+            kwargs = {
+                "messages": full_messages,
+                "temperature": 0,
+                "parallel_tool_calls": False,
+            }
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            response = await _llm_call(**kwargs)
+        except Exception as e:
+            print(f"[Tool Loop Error] {e}")
+            return "I am having trouble connecting to the AI service. Please try again in a moment."
+
+        choice = response.choices[0]
+        msg = choice.message
+
+        # Check for tool calls
+        if choice.finish_reason == "tool_calls" or (msg.tool_calls and len(msg.tool_calls) > 0):
+            # Build cleaned tool_calls list for history
+            cleaned_calls = []
+            for tc in msg.tool_calls:
+                try:
+                    fn_args = json.loads(tc.function.arguments or "{}")
+                    if not isinstance(fn_args, dict):
                         fn_args = {}
-                    # Remove null values before execution too
+                    # Remove null values
                     fn_args = {k: v for k, v in fn_args.items() if v is not None}
                 except (json.JSONDecodeError, TypeError):
                     fn_args = {}
-
-                print(f"[Tool Call] {fn_name}({fn_args})")
-                tool_result = await _execute_tool(fn_name, fn_args, role, user_id)
-                print(f"[Tool Result] {fn_name} → {len(tool_result)} chars")
-
-                full_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": tool_result,
+                cleaned_calls.append({
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {"name": tc.function.name, "arguments": json.dumps(fn_args)},
                 })
 
-            # Continue the loop to get the next response
+            # Do NOT include content key when tool_calls present - some providers reject empty string
+            assistant_msg = {"role": "assistant", "tool_calls": cleaned_calls}
+            if msg.content:  # only add content if non-empty
+                assistant_msg["content"] = msg.content
+            full_messages.append(assistant_msg)
+
+            # Execute each tool call
+            for tc_cleaned, tc_original in zip(cleaned_calls, msg.tool_calls):
+                fn_name = tc_original.function.name
+                try:
+                    fn_args = json.loads(tc_cleaned["function"]["arguments"])
+                except Exception:
+                    fn_args = {}
+                print(f"[Tool Call] {fn_name}({fn_args})")
+                tool_result = await _execute_tool(fn_name, fn_args, role, user_id)
+                print(f"[Tool Result] {fn_name} -> {len(tool_result)} chars")
+                full_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_cleaned["id"],
+                    "content": tool_result,
+                })
+            continue  # next round
+
+        # No tool calls - final response
+        reply = (msg.content or "").strip()
+
+        # Model returned nothing - this can happen on some providers; retry once
+        if not reply:
+            print(f"[Warn] Empty reply on round {round_num}, retrying...")
+            full_messages.append({"role": "user", "content": "Please provide a response."})
             continue
 
-        # No tool calls — return the text response
-        reply = choice.message.content or "I'm sorry, I couldn't generate a response. Please try again."
-        
-        # Detect if the model is simulating fake tool calls in text (hallucination)
-        if _is_fake_tool_response(reply):
-            print(f"[WARN] Detected fake tool call in text response, retrying with correction...")
-            # Add a correction message and retry
+        # Detect fake tool call in text (model hallucinating tool calls as text)
+        if _is_fake_tool_call(reply) and not retry_no_tool:
+            retry_no_tool = True
             full_messages.append({"role": "assistant", "content": reply})
             full_messages.append({
                 "role": "user",
                 "content": (
-                    "STOP. You are generating fake data. Do NOT simulate tool calls in text. "
-                    "Do NOT write function names like get_all_patients() in your response. "
-                    "Do NOT make up data. "
-                    "You MUST use the actual tool calling mechanism to fetch real data. "
-                    "Try again — call the appropriate tool function properly."
-                )
+                    "Please use the proper tool_calls mechanism to fetch data. "
+                    "Do not write function calls as text."
+                ),
             })
             continue
-        
-        return _clean_response(reply)
 
-    return "I've reached the maximum number of processing steps. Please try simplifying your question."
+        return _clean_response(reply) or "I could not generate a response."
+
+    return "I reached the maximum number of processing steps. Please try rephrasing your question."
+
+
+# ---------------------------------------------------------------------------
+# Simple reply (no tools)
+# ---------------------------------------------------------------------------
+async def _run_simple_reply(full_messages: list[dict], sanitize: bool = False) -> str:
+    try:
+        resp = await _llm_call(messages=full_messages, temperature=0.2)
+        content = (resp.choices[0].message.content or "").strip()
+        return _clean_response(content) or "I could not generate a response."
+    except Exception as e:
+        print(f"[Simple Reply Error] {e}")
+        return "I am having trouble connecting to the AI service. Please try again in a moment."
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+async def chat(messages: list[dict], role: str, user_id: int) -> str:
+    """
+    Main chat function. Routes to tool loop or simple reply based on intent.
+    """
+    system_prompt = _build_system_prompt(role, user_id)
+    tools = get_tools_for_role(role)
+    full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
+
+    intent = await _classify_intent(messages)
+    print(f"[Router] intent={intent}")
+
+    if intent == "tool":
+        return await _run_tool_loop(full_messages, tools, role, user_id)
+
+    return await _run_simple_reply(full_messages, sanitize=(intent == "health"))

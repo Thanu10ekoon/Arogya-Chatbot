@@ -5,6 +5,7 @@ An AI-powered healthcare assistant for the Arogya mobile clinic management syste
 ## Features
 
 - **Role-based access**: Admin, Doctor, and Patient each get different capabilities
+- **Intent routing**: Groq decides if a query needs tools, health knowledge, or general response
 - **Real-time data**: Fetches live data from all backend microservices (users, clinics, consultations, lab results, queues)
 - **Intent detection**: Handles small talk, data queries, and analytical questions automatically
 - **Data analysis**: Admins can ask predictive/analytical questions (e.g., "Will this area have more diabetic patients next year?") — the chatbot fetches bulk data and provides data-driven insights
@@ -28,7 +29,8 @@ An AI-powered healthcare assistant for the Arogya mobile clinic management syste
 ## Prerequisites
 
 - **Python 3.11+**
-- **Groq API key** from [https://console.groq.com/](https://console.groq.com/) (Free tier available)
+- **Hugging Face API token** from [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (for the fine-tuned model)
+- **Groq API key** from [https://console.groq.com/](https://console.groq.com/) (fallback)
 - Backend microservices running (user-service, clinic-service, etc.)
 
 ## Setup
@@ -62,20 +64,31 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Open `.env` and set your Groq API key:
+Open `.env` and set your API keys:
 
 ```env
-GROQ_API_KEY=gsk_your-actual-api-key-here
+# Primary Provider (Gemini)
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-1.5-flash
+
+# Fallback Providers
+OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_MODEL=qwen/qwen-2.5-72b-instruct
+
+GROQ_API_KEY=your_groq_key
 GROQ_MODEL=llama-3.3-70b-versatile
+
+OLLAMA_API_KEY=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=llama3
 ```
 
-**Recommended Models:**
-- `llama-3.3-70b-versatile` - Best for function calling with data queries (recommended)
-- `llama-3.1-70b-versatile` - Alternative with good function calling
-- `llama-3.1-8b-instant` - Faster but may have issues with complex function calling
-- `mixtral-8x7b-32768` - Good alternative
-
-The other settings (service URLs, port) can stay at their defaults if your backend services are running on the standard ports.
+**Model Fallback Architecture:**
+The chatbot uses a robust fallback mechanism using the `langchain-openai` interface. It will automatically try providers in the following sequence if rate limits or errors occur:
+1. **Gemini** (Primary)
+2. **OpenRouter** (Fallback 1)
+3. **Groq** (Fallback 2)
+4. **Ollama** (Local Fallback 3)
 
 ### 5. Start the chatbot server
 
@@ -83,19 +96,19 @@ The other settings (service URLs, port) can stay at their defaults if your backe
 python main.py
 ```
 
-The chatbot will start on **http://localhost:8090**.
+The chatbot will start on **http://localhost:8091**.
 
 You should see:
 ```
-🤖 Arogya Chatbot starting on port 8090...
-INFO:     Uvicorn running on http://0.0.0.0:8090
+🤖 Arogya Chatbot starting on port 8091...
+INFO:     Uvicorn running on http://127.0.0.1:8091
 ```
 
 ### 6. Verify it's running
 
 Open a browser or use curl:
 ```bash
-curl http://localhost:8090/health
+curl http://localhost:8091/health
 ```
 
 Expected response:
@@ -118,14 +131,18 @@ The chatbot widget is already integrated into the Arogya Frontend. Once the chat
 
 | Variable | Default | Description |
 |---|---|---|
-| `GROQ_API_KEY` | (required) | Your Groq API key from console.groq.com (free tier available) |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model to use - recommended: `llama-3.3-70b-versatile` or `llama-3.1-70b-versatile` for best function calling |
+| `GEMINI_API_KEY` | (required) | Primary Gemini API Key |
+| `GEMINI_MODEL` | `gemini-1.5-flash` | Primary Model |
+| `OPENROUTER_API_KEY` | (optional) | OpenRouter API Key for fallback |
+| `OPENROUTER_MODEL` | `qwen/qwen-2.5-72b-instruct` | OpenRouter model |
+| `GROQ_API_KEY` | (optional) | Groq API Key for fallback |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model |
 | `USER_SERVICE_URL` | `http://localhost:8081` | User service base URL |
 | `CLINIC_SERVICE_URL` | `http://localhost:8082` | Clinic service base URL |
 | `QUEUE_SERVICE_URL` | `http://localhost:8085` | Queue service base URL |
 | `CONSULTATION_SERVICE_URL` | `http://localhost:8086` | Consultation service base URL |
 | `MEDICAL_RECORDS_SERVICE_URL` | `http://localhost:8087` | Medical records service base URL |
-| `CHATBOT_PORT` | `8090` | Port the chatbot server runs on |
+| `CHATBOT_PORT` | `8091` | Port the chatbot server runs on |
 
 ## Example Conversations
 

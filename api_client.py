@@ -68,8 +68,39 @@ async def _post(url: str, json_body: dict | list | None = None) -> dict | list |
             "message": f"Could not connect to backend service: {str(e)}"
         }
 
+async def _put(url: str, json_body: dict | list | None = None) -> dict | list | None:
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.put(url, json=json_body)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        return {
+            "error": f"Backend service error (HTTP {e.response.status_code})",
+            "url": url,
+            "status_code": e.response.status_code,
+            "message": "The backend service encountered an error during update."
+        }
+    except Exception as e:
+        return {"error": "Connection failed", "url": url, "message": str(e)}
 
-# ── User Service ─────────────────────────────────────────────────────────────
+async def _delete(url: str) -> dict | list | None:
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.delete(url)
+            resp.raise_for_status()
+            return {"status": "success", "message": "Deleted successfully"}
+    except httpx.HTTPStatusError as e:
+        return {
+            "error": f"Backend service error (HTTP {e.response.status_code})",
+            "url": url,
+            "status_code": e.response.status_code,
+            "message": "The backend service encountered an error during deletion."
+        }
+    except Exception as e:
+        return {"error": "Connection failed", "url": url, "message": str(e)}
+
+#  User Service 
 
 async def get_all_users():
     return await _get(f"{USER_SERVICE_URL}/users/getAllUsers")
@@ -79,7 +110,7 @@ async def get_user(user_id: int):
     return await _get(f"{USER_SERVICE_URL}/users/getUser/{user_id}")
 
 
-# ── Patient Profiles ─────────────────────────────────────────────────────────
+#  Patient Profiles 
 
 async def get_all_patients():
     return await _get(f"{USER_SERVICE_URL}/patient_profile/getAllPatientProfiles")
@@ -89,7 +120,7 @@ async def get_patient_profile_by_user_id(user_id: int):
     return await _get(f"{USER_SERVICE_URL}/patient_profile/getPatientProfileByUserId/{user_id}")
 
 
-# ── Doctor Profiles ──────────────────────────────────────────────────────────
+#  Doctor Profiles 
 
 async def get_all_doctors():
     return await _get(f"{USER_SERVICE_URL}/doctor_profile/getAllDoctorProfiles")
@@ -103,7 +134,7 @@ async def get_doctor_profile(doctor_id: int):
     return await _get(f"{USER_SERVICE_URL}/doctor_profile/getDoctorProfile/{doctor_id}")
 
 
-# ── Admin / Technician Profiles ──────────────────────────────────────────────
+#  Admin / Technician Profiles 
 
 async def get_all_admins():
     return await _get(f"{USER_SERVICE_URL}/admin_profile/getAllAdminProfiles")
@@ -117,7 +148,7 @@ async def get_admin_profile_by_user_id(user_id: int):
     return await _get(f"{USER_SERVICE_URL}/admin_profile/getAdminProfileByUserId/{user_id}")
 
 
-# ── Clinic Service ───────────────────────────────────────────────────────────
+#  Clinic Service 
 
 async def get_all_clinics():
     return await _get(f"{CLINIC_SERVICE_URL}/clinics/getAllClinics")
@@ -131,7 +162,7 @@ async def get_clinic_doctors(clinic_id: int):
     return await _get(f"{CLINIC_SERVICE_URL}/clinic_doctors/getClinicDoctorsByClinicId/{clinic_id}")
 
 
-# ── Queue Service ────────────────────────────────────────────────────────────
+#  Queue Service 
 
 async def get_clinic_queue(clinic_id: str):
     return await _get(f"{QUEUE_SERVICE_URL}/queue/clinics/{clinic_id}/tokens")
@@ -141,7 +172,7 @@ async def get_queue_token(token_id: int):
     return await _get(f"{QUEUE_SERVICE_URL}/queue/tokens/{token_id}")
 
 
-# ── Consultation Service ─────────────────────────────────────────────────────
+#  Consultation Service 
 
 async def get_consultation(consultation_id: int):
     return await _get(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}")
@@ -183,7 +214,7 @@ async def get_consultation_with_tests(consultation_id: int):
     return await _get(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}/with-tests")
 
 
-# ── Lab Tests ────────────────────────────────────────────────────────────────
+#  Lab Tests 
 
 async def get_lab_tests(
     status: str | None = None,
@@ -206,7 +237,7 @@ async def get_lab_tests_by_consultation(consultation_id: int):
     return await _get(f"{CONSULTATION_SERVICE_URL}/lab-tests/consultation/{consultation_id}")
 
 
-# ── Medical Records Service ──────────────────────────────────────────────────
+#  Medical Records Service 
 
 async def get_test_results_by_patient(patient_id: int):
     return await _get(f"{MEDICAL_RECORDS_SERVICE_URL}/test-results/patient/{patient_id}")
@@ -228,3 +259,51 @@ async def get_all_test_results():
     if isinstance(data, dict) and "content" in data:
         return data["content"]
     return data
+
+
+async def create_clinic(data: dict):
+    if "doctorIds" not in data:
+        data["doctorIds"] = []
+    return await _post(f"{CLINIC_SERVICE_URL}/clinics/createClinic", data)
+
+async def update_clinic(clinic_id: int, data: dict):
+    return await _put(f"{CLINIC_SERVICE_URL}/clinics/updateClinic", data)
+
+async def delete_clinic(clinic_id: int):
+    return await _delete(f"{CLINIC_SERVICE_URL}/clinics/deleteClinic/{clinic_id}")
+
+async def create_consultation(data: dict):
+    return await _post(f"{CONSULTATION_SERVICE_URL}/consultations", data)
+
+async def update_consultation(consultation_id: int, data: dict):
+    return await _put(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}", data)
+
+async def complete_consultation(consultation_id: int):
+    return await _post(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}/complete")
+
+async def cancel_consultation(consultation_id: int):
+    return await _post(f"{CONSULTATION_SERVICE_URL}/consultations/{consultation_id}/cancel")
+
+async def create_lab_test(data: dict):
+    return await _post(f"{CONSULTATION_SERVICE_URL}/lab-tests", data)
+
+async def update_lab_test(lab_test_id: int, data: dict):
+    return await _put(f"{CONSULTATION_SERVICE_URL}/lab-tests/{lab_test_id}", data)
+
+async def update_lab_test_status(lab_test_id: int, data: dict):
+    return await _put(f"{CONSULTATION_SERVICE_URL}/lab-tests/{lab_test_id}/status", data)
+
+async def delete_lab_test(lab_test_id: int):
+    return await _delete(f"{CONSULTATION_SERVICE_URL}/lab-tests/{lab_test_id}")
+
+async def create_test_result(data: dict):
+    return await _post(f"{MEDICAL_RECORDS_SERVICE_URL}/test-results", data)
+
+async def update_test_result(test_result_id: int, data: dict):
+    return await _put(f"{MEDICAL_RECORDS_SERVICE_URL}/test-results/{test_result_id}", data)
+
+async def delete_test_result(test_result_id: int):
+    return await _delete(f"{MEDICAL_RECORDS_SERVICE_URL}/test-results/{test_result_id}")
+
+async def update_user(user_id: int, data: dict):
+    return await _put(f"{USER_SERVICE_URL}/users/updateUser", data)

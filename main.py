@@ -80,8 +80,14 @@ async def chat_endpoint(req: ChatRequest):
 
         return ChatResponse(reply=reply)
     except Exception as e:
-        print(f"[Chat Error] {e}")
-        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+        err = str(e)
+        print(f"[Chat Error] {err}")
+        # Return a friendly message instead of HTTP 500 so frontend doesn't crash
+        if "429" in err or "rate limit" in err.lower() or "quota" in err.lower():
+            msg = "I'm currently experiencing high demand. Please wait a moment and try again."
+        else:
+            msg = "I encountered an issue processing your request. Please try again."
+        return ChatResponse(reply=msg)
 
 
 @app.post("/chat/clear")
