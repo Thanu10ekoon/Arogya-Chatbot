@@ -9,6 +9,7 @@ An AI-powered healthcare assistant for the Arogya mobile clinic management syste
 - **Real-time data**: Fetches live data from all backend microservices (users, clinics, consultations, lab results, queues)
 - **Intent detection**: Handles small talk, data queries, and analytical questions automatically
 - **Data analysis**: Admins can ask predictive/analytical questions (e.g., "Will this area have more diabetic patients next year?") — the chatbot fetches bulk data and provides data-driven insights
+- **Medical Q&A Specialization**: When a patient asks a health or symptom-related question, the chatbot automatically routes the request to a fine-tuned medical LLM hosted on Hugging Face Spaces (`Thanu10/Arogya-Medical-Chat`) via Gradio.
 - **Secure**: Patients can only access their own data; role enforcement is applied server-side
 
 ## Role Capabilities

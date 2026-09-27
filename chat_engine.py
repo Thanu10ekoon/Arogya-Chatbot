@@ -506,4 +506,25 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
     if intent == "tool":
         return await _run_tool_loop(full_messages, tools, role, user_id)
 
+    if intent == "health" and role.lower() == "patient":
+        latest_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        if latest_msg:
+            import os
+            import asyncio
+            from gradio_client import Client
+            
+            def _call_gradio(msg):
+                hf_token = os.getenv("HF_API_KEY")
+                client = Client("Thanu10/Arogya-Medical-Chat", hf_token=hf_token)
+                return client.predict(message=msg, api_name="/generate_response")
+
+            try:
+                print(f"[Gradio] Forwarding to Arogya-Medical-Chat: {latest_msg[:50]}...")
+                gradio_response = await asyncio.to_thread(_call_gradio, latest_msg)
+                if gradio_response:
+                    return _clean_response(str(gradio_response))
+            except Exception as e:
+                print(f"[Gradio Error] {e}")
+                # Fall through to simple reply below if Gradio fails
+
     return await _run_simple_reply(full_messages, sanitize=(intent == "health"))
