@@ -492,6 +492,8 @@ async def _run_simple_reply(full_messages: list[dict], sanitize: bool = False) -
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+import system1_router
+
 async def chat(messages: list[dict], role: str, user_id: int) -> str:
     """
     Main chat function. Routes to tool loop or simple reply based on intent.
@@ -500,10 +502,30 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
     tools = get_tools_for_role(role)
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
 
-    intent = await _classify_intent(messages)
-    print(f"[Router] intent={intent}")
+    intent = system1_router.fast_intent_classification(messages)
+    print(f"[System 1 Router] intent={intent}")
 
     if intent == "tool":
+        selected_tool_name = system1_router.fast_tool_selection(messages, tools)
+        print(f"[System 1 Router] selected tool: {selected_tool_name}")
+        
+        if selected_tool_name != "unknown":
+            # Pass ONLY the selected tool to the generative LLM
+            tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
+            
+            # Optimization: If the selected tool has NO parameters, execute it immediately!
+            if tools:
+                selected_tool = tools[0]
+                params = selected_tool["function"].get("parameters", {}).get("properties", {})
+                if not params:
+                    print(f"[System 1 Router] Tool {selected_tool_name} requires no args, executing directly!")
+                    tool_result = await _execute_tool(selected_tool_name, {}, role, user_id)
+                    full_messages.append({
+                        "role": "user",
+                        "content": f"System retrieved data: {tool_result}\n\nPlease summarize this clearly for me.",
+                    })
+                    return await _run_simple_reply(full_messages)
+
         return await _run_tool_loop(full_messages, tools, role, user_id)
 
     if intent == "health" and role.lower() == "patient":
