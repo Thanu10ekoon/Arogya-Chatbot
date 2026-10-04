@@ -233,6 +233,22 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                 print(f"[Clinic Resolve] '{raw}' -> ID {resolved}")
                 args["clinic_id"] = resolved
 
+        # --- Doctor name -> ID resolution for create_clinic ---
+        if fn_name == "create_clinic":
+            doctor_names = args.pop("doctorNames", [])
+            if doctor_names:
+                all_doctors = await api_client.get_all_doctors()
+                if isinstance(all_doctors, list):
+                    doctor_ids = args.get("doctorIds", [])
+                    for name in doctor_names:
+                        name_lower = name.lower()
+                        for doc in all_doctors:
+                            doc_name = (doc.get("name") or doc.get("doctorName", "")).lower()
+                            if doc_name and (name_lower in doc_name or doc_name in name_lower):
+                                doctor_ids.append(doc.get("id"))
+                                break
+                    args["doctorIds"] = list(set(doctor_ids))
+
         # --- Dispatch ---
         result = None
 

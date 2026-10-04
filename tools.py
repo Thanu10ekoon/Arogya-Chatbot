@@ -336,9 +336,10 @@ TOOL_CREATE_CLINIC = {
                 "scheduledDate": {"type": "string"},
                 "scheduledTime": {"type": "string"},
                 "status": {"type": "string"},
-                "doctorIds": {"type": "array", "items": {"type": "integer"}}
+                "doctorIds": {"type": "array", "items": {"type": "integer"}},
+                "doctorNames": {"type": "array", "items": {"type": "string"}, "description": "Optional list of doctor names to assign. If given, the system will automatically find their IDs."}
             },
-            "required": ["clinicName", "province", "district", "scheduledDate"]
+            "required": ["clinicName", "province", "district", "location", "scheduledDate", "scheduledTime", "status"]
         }
     }
 }
