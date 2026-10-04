@@ -3,13 +3,14 @@ Arogya Chatbot — FastAPI server.
 Provides a /chat endpoint consumed by the frontend widget.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import chat_engine
 import memory
 from config import CHATBOT_PORT
+from auth_context import current_auth_token
 
 app = FastAPI(title="Arogya Chatbot", version="1.0.0")
 
@@ -52,7 +53,14 @@ async def health():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(req: ChatRequest, request: Request):
+    # Extract JWT token and set in context
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        current_auth_token.set(auth_header)
+    else:
+        current_auth_token.set(None)
+
     # Validate role
     if req.user_role.lower() not in ("admin", "doctor", "patient"):
         raise HTTPException(status_code=403, detail="Chatbot is not available for this role.")

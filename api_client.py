@@ -11,13 +11,23 @@ from config import (
     MEDICAL_RECORDS_SERVICE_URL,
 )
 
+from auth_context import current_auth_token
+
 TIMEOUT = 15.0
+
+
+def _get_headers() -> dict:
+    token = current_auth_token.get()
+    if token:
+        return {"Authorization": token}
+    return {}
+
 
 
 async def _get(url: str) -> dict | list | None:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=_get_headers())
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
@@ -45,7 +55,7 @@ async def _get(url: str) -> dict | list | None:
 async def _post(url: str, json_body: dict | list | None = None) -> dict | list | None:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.post(url, json=json_body)
+            resp = await client.post(url, json=json_body, headers=_get_headers())
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
@@ -71,7 +81,7 @@ async def _post(url: str, json_body: dict | list | None = None) -> dict | list |
 async def _put(url: str, json_body: dict | list | None = None) -> dict | list | None:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.put(url, json=json_body)
+            resp = await client.put(url, json=json_body, headers=_get_headers())
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
@@ -87,7 +97,7 @@ async def _put(url: str, json_body: dict | list | None = None) -> dict | list | 
 async def _delete(url: str) -> dict | list | None:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.delete(url)
+            resp = await client.delete(url, headers=_get_headers())
             resp.raise_for_status()
             return {"status": "success", "message": "Deleted successfully"}
     except httpx.HTTPStatusError as e:
