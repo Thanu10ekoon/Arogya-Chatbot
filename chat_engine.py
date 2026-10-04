@@ -506,17 +506,16 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
     print(f"[System 1 Router] intent={intent}")
 
     if intent == "tool":
-        selected_tool_names = system1_router.fast_tool_selection(messages, tools)
-        print(f"[System 1 Router] selected tools: {selected_tool_names}")
+        selected_tool_name = system1_router.fast_tool_selection(messages, tools)
+        print(f"[System 1 Router] selected tool: {selected_tool_name}")
         
-        if selected_tool_names:
-            # Pass ONLY the selected tools to the generative LLM
-            tools = [t for t in tools if t["function"]["name"] in selected_tool_names]
+        if selected_tool_name != "unknown":
+            # Pass ONLY the selected tool to the generative LLM
+            tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
             
-            # Optimization: If exactly ONE tool was selected and it has NO parameters, execute it immediately!
-            if len(tools) == 1:
+            # Optimization: If the selected tool has NO parameters, execute it immediately!
+            if tools:
                 selected_tool = tools[0]
-                selected_tool_name = selected_tool["function"]["name"]
                 params = selected_tool["function"].get("parameters", {}).get("properties", {})
                 if not params:
                     print(f"[System 1 Router] Tool {selected_tool_name} requires no args, executing directly!")
