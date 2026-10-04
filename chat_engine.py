@@ -594,12 +594,13 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
         print(f"[System 1 Router] selected tool: {selected_tool_name}")
         
         if selected_tool_name != "unknown":
-            # Pass ONLY the selected tool to the generative LLM
-            tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
+            # We don't restrict tools here anymore because the zero-shot router often picks the wrong tool
+            # But we keep the optimization for zero-arg tools if it happens to be right
+            matched_tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
             
             # Optimization: If the selected tool has NO parameters, execute it immediately!
-            if tools:
-                selected_tool = tools[0]
+            if matched_tools:
+                selected_tool = matched_tools[0]
                 params = selected_tool["function"].get("parameters", {}).get("properties", {})
                 if not params:
                     print(f"[System 1 Router] Tool {selected_tool_name} requires no args, executing directly!")
