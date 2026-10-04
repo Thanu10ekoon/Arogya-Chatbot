@@ -147,22 +147,29 @@ async def _resolve_clinic_id(name: str) -> str | None:
     clinics = await api_client.get_all_clinics()
     if not isinstance(clinics, list) or not clinics:
         return None
+    # Keep exact match as an optimization
     name_lower = name.lower().strip()
-    # Exact match
     for c in clinics:
         if c.get("clinicName", "").lower() == name_lower:
             return str(c["id"])
-    # Substring match
-    for c in clinics:
-        if name_lower in c.get("clinicName", "").lower():
-            return str(c["id"])
-    # Fuzzy match
-    best_score, best_id = 0.0, None
-    for c in clinics:
-        score = SequenceMatcher(None, name_lower, c.get("clinicName", "").lower()).ratio()
-        if score > best_score:
-            best_score, best_id = score, str(c["id"])
-    return best_id if best_score >= 0.55 else None
+            
+    # Use LLM for intelligent mapping
+    try:
+        clinic_list_str = "\n".join([f"ID: {c.get('id')} - Name: {c.get('clinicName')}" for c in clinics])
+        prompt = f"Given the user's requested clinic name: '{name}'\n\nFind the best matching clinic from this list:\n{clinic_list_str}\n\nRespond ONLY with the exact numerical ID of the matching clinic. If no clinic is a reasonable match, respond with 'None'."
+        resp = await groq_client.chat.completions.create(
+            model=GROQ_PRIMARY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=10
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if content.isdigit():
+            return content
+    except Exception as e:
+        print(f"[_resolve_clinic_id LLM Error] {e}")
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +411,7 @@ def _build_system_prompt(role: str, user_id: int) -> str:
             f"\nThe current user is a PATIENT (user ID: {user_id}). "
             "Patients can ONLY see their own data. "
             "When fetching consultations or lab results, the system will automatically scope to this patient. "
-            "Patients can browse available clinics."
+            "Patients can browse available clinics. If they ask for nearby or upcoming clinics, ALWAYS use the `get_all_clinics` tool, and then manually filter the results based on their location and the current date to provide the most relevant upcoming options."
         )
     return base + f"\nThe current user has role '{role}' (user ID: {user_id})."
 
@@ -528,11 +535,11 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
     tools = get_tools_for_role(role)
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
 
-    intent = system1_router.fast_intent_classification(messages)
+    intent = await system1_router.fast_intent_classification(messages)
     print(f"[System 1 Router] intent={intent}")
 
     if intent == "tool":
-        selected_tool_name = system1_router.fast_tool_selection(messages, tools)
+        selected_tool_name = await system1_router.fast_tool_selection(messages, tools)
         print(f"[System 1 Router] selected tool: {selected_tool_name}")
         
         if selected_tool_name != "unknown":
