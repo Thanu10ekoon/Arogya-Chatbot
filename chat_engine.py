@@ -212,7 +212,7 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                         if doc_id:
                             all_cd = await api_client.get_all_clinic_doctors()
                             if isinstance(all_cd, list):
-                                my_clinic_ids = [cd.get("clinic", {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id]
+                                my_clinic_ids = [(cd.get("clinic") or {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id]
                                 if my_clinic_ids:
                                     args["clinic_id"] = str(my_clinic_ids[0])
                                 else:
@@ -244,7 +244,7 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                     if doc_id:
                         all_cd = await api_client.get_all_clinic_doctors()
                         if isinstance(all_cd, list):
-                            my_clinic_ids = {cd.get("clinic", {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id}
+                            my_clinic_ids = {(cd.get("clinic") or {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id}
                             result = [c for c in result if c.get("id") in my_clinic_ids]
                 except Exception as e:
                     print(f"Error filtering clinics for doctor: {e}")

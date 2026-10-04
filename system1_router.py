@@ -52,12 +52,16 @@ def _fallback_string_match(text: str, candidate_labels: list[str]) -> str:
         return candidate_labels[2]
         
     # Tool selection fallback
+    best_match = candidate_labels[-1]
+    max_matches = 0
     for label in candidate_labels:
         clean_label = label.replace("_", " ")
-        if any(word in text_lower for word in clean_label.split() if len(word) > 3):
-            return label
+        matches = sum(1 for word in clean_label.split() if len(word) > 3 and word in text_lower)
+        if matches > max_matches:
+            max_matches = matches
+            best_match = label
             
-    return candidate_labels[-1]
+    return best_match
 
 def fast_intent_classification(messages: list[dict]) -> str:
     latest_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
