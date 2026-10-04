@@ -98,13 +98,14 @@ async def fast_intent_classification(messages: list[dict]) -> str:
     return "general"
 
 async def fast_tool_selection(messages: list[dict], available_tools: list[dict]) -> str:
-    latest_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    recent_msgs = [m["content"] for m in messages[-4:] if m.get("content")]
+    context_msg = " | ".join(recent_msgs)
     
     tool_names = [t["function"]["name"] for t in available_tools]
     if not tool_names:
         return "unknown"
         
-    res = await _query_system1(latest_msg, tool_names)
+    res = await _query_system1(context_msg, tool_names)
     
     if res in tool_names:
         return res
