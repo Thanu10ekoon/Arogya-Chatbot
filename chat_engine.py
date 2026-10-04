@@ -251,6 +251,32 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                                 break
                     args["doctorIds"] = list(set(doctor_ids))
 
+            if "scheduledTime" in args:
+                try:
+                    import re
+                    from datetime import datetime
+                    s = str(args["scheduledTime"]).strip().lower().replace('.', ':')
+                    s = re.sub(r'[^0-9:amp ]', '', s).replace('am', ' am').replace('pm', ' pm').replace('  ', ' ').strip()
+                    if 'am' in s or 'pm' in s:
+                        args["scheduledTime"] = datetime.strptime(s, "%I:%M %p" if ':' in s else "%I %p").strftime("%H:%M:%S")
+                    else:
+                        args["scheduledTime"] = datetime.strptime(s, "%H:%M:%S" if s.count(':') == 2 else "%H:%M").strftime("%H:%M:%S")
+                except Exception as e:
+                    print(f"Time parse error: {e}")
+                    
+            if "scheduledDate" in args:
+                try:
+                    from datetime import datetime
+                    s = str(args["scheduledDate"]).strip().replace('.', '-').replace('/', '-')
+                    parts = s.split('-')
+                    if len(parts) == 3:
+                        if len(parts[0]) == 4:
+                            args["scheduledDate"] = datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+                        else:
+                            args["scheduledDate"] = datetime.strptime(s, "%d-%m-%Y").strftime("%Y-%m-%d")
+                except Exception as e:
+                    print(f"Date parse error: {e}")
+
         # --- Dispatch ---
         result = None
 
@@ -422,7 +448,8 @@ def _build_system_prompt(role: str, user_id: int) -> str:
             f"\nThe current user is a DOCTOR (user ID: {user_id}). "
             "Doctors can view patient details, their own consultations (doctor_id={user_id}), "
             "clinic queues, and lab results. They cannot view other doctors private data.\n"
-            "When asked about your own consultations, use doctor_id={user_id} in get_consultations."
+            "When asked about your own consultations, use doctor_id={user_id} in get_consultations.\n"
+            "When asked to check your assigned clinics, ALWAYS use the `get_all_clinics` tool. The system will automatically filter the results to only return the clinics you are assigned to."
         ).format(user_id=user_id)
     elif role_lower == "patient":
         return base + (
