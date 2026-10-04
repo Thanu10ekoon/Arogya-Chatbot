@@ -117,4 +117,4 @@ async def get_history(user_id: int):
 if __name__ == "__main__":
     import uvicorn
     print(f"Arogya Chatbot starting on port {CHATBOT_PORT}...")
-    uvicorn.run("main:app", host="127.0.0.1", port=CHATBOT_PORT, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=CHATBOT_PORT, reload=True)
