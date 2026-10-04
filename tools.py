@@ -333,8 +333,8 @@ TOOL_CREATE_CLINIC = {
                     "description": "Must be the district name exactly as formatted: e.g. 'Galle District', 'Colombo District', 'Matara District', 'Kandy District', etc. (must end with ' District')"
                 },
                 "location": {"type": "string"},
-                "scheduledDate": {"type": "string"},
-                "scheduledTime": {"type": "string"},
+                "scheduledDate": {"type": "string", "description": "MUST be in YYYY-MM-DD format (e.g., '2026-12-24')"},
+                "scheduledTime": {"type": "string", "description": "MUST be in HH:MM format (24-hour clock, e.g., '08:30' or '14:00')"},
                 "status": {"type": "string"},
                 "doctorIds": {"type": "array", "items": {"type": "integer"}},
                 "doctorNames": {"type": "array", "items": {"type": "string"}, "description": "Optional list of doctor names to assign. If given, the system will automatically find their IDs."}

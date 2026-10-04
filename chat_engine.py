@@ -243,8 +243,10 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                     for name in doctor_names:
                         name_lower = name.lower()
                         for doc in all_doctors:
-                            doc_name = (doc.get("name") or doc.get("doctorName", "")).lower()
-                            if doc_name and (name_lower in doc_name or doc_name in name_lower):
+                            first = str(doc.get("firstName") or "").lower()
+                            last = str(doc.get("lastName") or "").lower()
+                            full_name = f"{first} {last}".strip()
+                            if full_name and (name_lower in full_name or full_name in name_lower):
                                 doctor_ids.append(doc.get("id"))
                                 break
                     args["doctorIds"] = list(set(doctor_ids))
