@@ -204,7 +204,22 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
         # --- Clinic name -> ID resolution ---
         if fn_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors"):
             raw = str(args.get("clinic_id", "") or args.pop("clinic_name", ""))
-            if not raw.isdigit():
+            if not raw or raw.lower() == "none":
+                if role_lower == "doctor":
+                    try:
+                        profile = await api_client.get_doctor_profile_by_user_id(user_id)
+                        doc_id = profile.get("id") if isinstance(profile, dict) else None
+                        if doc_id:
+                            all_cd = await api_client.get_all_clinic_doctors()
+                            if isinstance(all_cd, list):
+                                my_clinic_ids = [cd.get("clinic", {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id]
+                                if my_clinic_ids:
+                                    args["clinic_id"] = str(my_clinic_ids[0])
+                                else:
+                                    return json.dumps({"error": "You are not assigned to any clinics."})
+                    except Exception as e:
+                        print(f"Error auto-detecting doctor clinic: {e}")
+            elif not raw.isdigit():
                 resolved = await _resolve_clinic_id(raw)
                 if not resolved:
                     return json.dumps({"error": f"No clinic found matching '{raw}'. Use get_all_clinics to see available clinics."})
@@ -222,6 +237,17 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
             result = await api_client.get_all_doctors()
         elif fn_name == "get_all_clinics":
             result = await api_client.get_all_clinics()
+            if role_lower == "doctor" and isinstance(result, list):
+                try:
+                    profile = await api_client.get_doctor_profile_by_user_id(user_id)
+                    doc_id = profile.get("id") if isinstance(profile, dict) else None
+                    if doc_id:
+                        all_cd = await api_client.get_all_clinic_doctors()
+                        if isinstance(all_cd, list):
+                            my_clinic_ids = {cd.get("clinic", {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id}
+                            result = [c for c in result if c.get("id") in my_clinic_ids]
+                except Exception as e:
+                    print(f"Error filtering clinics for doctor: {e}")
         elif fn_name == "get_clinic_details":
             result = await api_client.get_clinic(int(args["clinic_id"]))
         elif fn_name == "get_clinic_doctors":

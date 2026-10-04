@@ -60,13 +60,13 @@ TOOL_GET_CLINIC_DETAILS = {
     "type": "function",
     "function": {
         "name": "get_clinic_details",
-        "description": "Get details of a specific clinic. Returns name, province, district, location, scheduled date and time, and status. You can pass the clinic name (e.g., 'Kalutara') or numeric ID — the system will resolve it automatically.",
+        "description": "Get details of a specific clinic. Returns name, province, district, location, scheduled date and time, and status. You can pass the clinic name (e.g., 'Kalutara') or numeric ID. If you are a doctor asking for your own assigned clinic, you can omit the clinic_id.",
         "parameters": {
             "type": "object",
             "properties": {
-                "clinic_id": {"type": "string", "description": "The clinic name (e.g., 'Kalutara', 'Kandy Mobile Clinic') or numeric ID (e.g., '1', '2')"},
+                "clinic_id": {"type": "string", "description": "The clinic name (e.g., 'Kalutara', 'Kandy Mobile Clinic') or numeric ID (e.g., '1', '2'). Optional for doctors checking their own clinic."},
             },
-            "required": ["clinic_id"],
+            "required": [],
         },
     },
 }
@@ -75,13 +75,13 @@ TOOL_GET_CLINIC_DOCTORS = {
     "type": "function",
     "function": {
         "name": "get_clinic_doctors",
-        "description": "Get the list of doctors assigned to a specific clinic. Returns doctor names and specializations. You can pass the clinic name (e.g., 'Kalutara') or numeric ID — the system will resolve it automatically.",
+        "description": "Get the list of doctors assigned to a specific clinic. Returns doctor names and specializations. You can pass the clinic name (e.g., 'Kalutara') or numeric ID. If you are a doctor asking for doctors in your own assigned clinic, you can omit the clinic_id.",
         "parameters": {
             "type": "object",
             "properties": {
-                "clinic_id": {"type": "string", "description": "The clinic name (e.g., 'Kalutara', 'Kandy Mobile Clinic') or numeric ID (e.g., '1', '2')"},
+                "clinic_id": {"type": "string", "description": "The clinic name (e.g., 'Kalutara', 'Kandy Mobile Clinic') or numeric ID (e.g., '1', '2'). Optional for doctors checking their own clinic."},
             },
-            "required": ["clinic_id"],
+            "required": [],
         },
     },
 }
@@ -90,13 +90,13 @@ TOOL_GET_CLINIC_QUEUE = {
     "type": "function",
     "function": {
         "name": "get_clinic_queue",
-        "description": "Get the current patient queue (tokens) for a specific clinic. Shows token numbers, positions, statuses (PENDING/SERVING/COMPLETED/CANCELLED), and patient IDs. You can pass the clinic name (e.g., 'Kalutara') or numeric ID — the system will resolve it automatically.",
+        "description": "Get the current patient queue (tokens) for a specific clinic. Shows token numbers, positions, statuses, and patient IDs. You can pass the clinic name (e.g., 'Kalutara') or numeric ID. If you are a doctor asking for your own assigned clinic's queue, you can omit the clinic_id.",
         "parameters": {
             "type": "object",
             "properties": {
-                "clinic_id": {"type": "string", "description": "The clinic name (e.g., 'Kalutara', 'Kandy Mobile Clinic') or numeric ID (e.g., '1', '2')"},
+                "clinic_id": {"type": "string", "description": "The clinic name (e.g., 'Kalutara', 'Kandy Mobile Clinic') or numeric ID (e.g., '1', '2'). Optional for doctors checking their own queue."},
             },
-            "required": ["clinic_id"],
+            "required": [],
         },
     },
 }
