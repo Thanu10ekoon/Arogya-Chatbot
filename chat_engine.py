@@ -634,4 +634,6 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
                 print(f"[Gradio Error] {e}")
                 # Fall through to simple reply below if Gradio fails
 
-    return await _run_simple_reply(full_messages, sanitize=(intent == "health"))
+    # If we get here (general intent, or health failed), we still give the LLM its tools!
+    # Modern LLMs know how to just chat if no tool is needed.
+    return await _run_tool_loop(full_messages, tools, role, user_id)
