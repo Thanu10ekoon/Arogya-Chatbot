@@ -353,7 +353,18 @@ TOOL_UPDATE_CLINIC = {
             "type": "object",
             "properties": {
                 "clinic_id": {"type": "integer"},
-                "data": {"type": "object"}
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "clinicName": {"type": "string"},
+                        "location": {"type": "string"},
+                        "scheduledDate": {"type": "string"},
+                        "scheduledTime": {"type": "string"},
+                        "status": {"type": "string"},
+                        "doctorIds": {"type": "array", "items": {"type": "integer"}},
+                        "doctorNames": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
             },
             "required": ["clinic_id", "data"]
         }

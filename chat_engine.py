@@ -233,9 +233,12 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                 print(f"[Clinic Resolve] '{raw}' -> ID {resolved}")
                 args["clinic_id"] = resolved
 
-        # --- Doctor name -> ID resolution for create_clinic ---
-        if fn_name == "create_clinic":
-            doctor_names = args.pop("doctorNames", [])
+        # --- Doctor name -> ID resolution and Data Parsing ---
+        if fn_name in ("create_clinic", "update_clinic"):
+            # For update_clinic, the data is inside args["data"]
+            target_args = args.get("data", {}) if fn_name == "update_clinic" else args
+            
+            doctor_names = target_args.pop("doctorNames", [])
             if doctor_names:
                 all_doctors = await api_client.get_all_doctors()
                 if isinstance(all_doctors, list):
@@ -247,35 +250,38 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                             last = str(doc.get("lastName") or "").lower()
                             full_name = f"{first} {last}".strip()
                             if full_name and (name_lower in full_name or full_name in name_lower):
-                                doctor_ids.append(doc.get("id"))
+                                target_args.setdefault("doctorIds", []).append(doc.get("id"))
                                 break
-                    args["doctorIds"] = list(set(doctor_ids))
+                    target_args["doctorIds"] = list(set(target_args.get("doctorIds", [])))
 
-            if "scheduledTime" in args:
+            if "scheduledTime" in target_args:
                 try:
                     import re
                     from datetime import datetime
-                    s = str(args["scheduledTime"]).strip().lower().replace('.', ':')
+                    s = str(target_args["scheduledTime"]).strip().lower().replace('.', ':')
                     s = re.sub(r'[^0-9:amp ]', '', s).replace('am', ' am').replace('pm', ' pm').replace('  ', ' ').strip()
                     if 'am' in s or 'pm' in s:
-                        args["scheduledTime"] = datetime.strptime(s, "%I:%M %p" if ':' in s else "%I %p").strftime("%H:%M:%S")
+                        target_args["scheduledTime"] = datetime.strptime(s, "%I:%M %p" if ':' in s else "%I %p").strftime("%H:%M:%S")
                     else:
-                        args["scheduledTime"] = datetime.strptime(s, "%H:%M:%S" if s.count(':') == 2 else "%H:%M").strftime("%H:%M:%S")
+                        target_args["scheduledTime"] = datetime.strptime(s, "%H:%M:%S" if s.count(':') == 2 else "%H:%M").strftime("%H:%M:%S")
                 except Exception as e:
-                    print(f"Time parse error: {e}")
+                    return json.dumps({"error": f"Invalid scheduledTime format '{target_args['scheduledTime']}'. You MUST use HH:MM format (24-hour clock)."})
                     
-            if "scheduledDate" in args:
+            if "scheduledDate" in target_args:
                 try:
                     from datetime import datetime
-                    s = str(args["scheduledDate"]).strip().replace('.', '-').replace('/', '-')
+                    s = str(target_args["scheduledDate"]).strip().replace('.', '-').replace('/', '-')
                     parts = s.split('-')
                     if len(parts) == 3:
                         if len(parts[0]) == 4:
-                            args["scheduledDate"] = datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+                            target_args["scheduledDate"] = datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
                         else:
-                            args["scheduledDate"] = datetime.strptime(s, "%d-%m-%Y").strftime("%Y-%m-%d")
+                            target_args["scheduledDate"] = datetime.strptime(s, "%d-%m-%Y").strftime("%Y-%m-%d")
+                    else:
+                        # Try to parse exact YYYY-MM-DD just in case
+                        target_args["scheduledDate"] = datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
                 except Exception as e:
-                    print(f"Date parse error: {e}")
+                    return json.dumps({"error": f"Invalid scheduledDate format '{target_args['scheduledDate']}'. You MUST use YYYY-MM-DD format (e.g. 2027-02-16)."})
 
         # --- Dispatch ---
         result = None
