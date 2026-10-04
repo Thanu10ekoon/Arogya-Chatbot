@@ -209,7 +209,7 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                 args["user_id"] = user_id
 
         # --- Clinic name -> ID resolution ---
-        if fn_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors"):
+        if fn_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors", "update_clinic"):
             raw = str(args.get("clinic_id", "") or args.pop("clinic_name", ""))
             if not raw or raw.lower() == "none":
                 if role_lower == "doctor":

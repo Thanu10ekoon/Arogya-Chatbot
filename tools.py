@@ -352,7 +352,7 @@ TOOL_UPDATE_CLINIC = {
         "parameters": {
             "type": "object",
             "properties": {
-                "clinic_id": {"type": "integer"},
+                "clinic_id": {"type": "string", "description": "The exact name or the ID of the clinic to update."},
                 "data": {
                     "type": "object",
                     "properties": {
