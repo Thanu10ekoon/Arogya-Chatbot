@@ -172,6 +172,10 @@ async def get_clinic_doctors(clinic_id: int):
     return await _get(f"{CLINIC_SERVICE_URL}/clinic_doctors/getClinicDoctorsByClinicId/{clinic_id}")
 
 
+async def get_all_clinic_doctors():
+    return await _get(f"{CLINIC_SERVICE_URL}/clinic_doctors/getAllClinicDoctors")
+
+
 #  Queue Service 
 
 async def get_clinic_queue(clinic_id: str):

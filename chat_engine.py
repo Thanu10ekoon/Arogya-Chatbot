@@ -147,22 +147,29 @@ async def _resolve_clinic_id(name: str) -> str | None:
     clinics = await api_client.get_all_clinics()
     if not isinstance(clinics, list) or not clinics:
         return None
+    # Keep exact match as an optimization
     name_lower = name.lower().strip()
-    # Exact match
     for c in clinics:
         if c.get("clinicName", "").lower() == name_lower:
             return str(c["id"])
-    # Substring match
-    for c in clinics:
-        if name_lower in c.get("clinicName", "").lower():
-            return str(c["id"])
-    # Fuzzy match
-    best_score, best_id = 0.0, None
-    for c in clinics:
-        score = SequenceMatcher(None, name_lower, c.get("clinicName", "").lower()).ratio()
-        if score > best_score:
-            best_score, best_id = score, str(c["id"])
-    return best_id if best_score >= 0.55 else None
+            
+    # Use LLM for intelligent mapping
+    try:
+        clinic_list_str = "\n".join([f"ID: {c.get('id')} - Name: {c.get('clinicName')}" for c in clinics])
+        prompt = f"Given the user's requested clinic name: '{name}'\n\nFind the best matching clinic from this list:\n{clinic_list_str}\n\nRespond ONLY with the exact numerical ID of the matching clinic. If no clinic is a reasonable match, respond with 'None'."
+        resp = await groq_client.chat.completions.create(
+            model=GROQ_PRIMARY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=10
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if content.isdigit():
+            return content
+    except Exception as e:
+        print(f"[_resolve_clinic_id LLM Error] {e}")
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -202,14 +209,79 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
                 args["user_id"] = user_id
 
         # --- Clinic name -> ID resolution ---
-        if fn_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors"):
+        if fn_name in ("get_clinic_queue", "get_clinic_details", "get_clinic_doctors", "update_clinic"):
             raw = str(args.get("clinic_id", "") or args.pop("clinic_name", ""))
-            if not raw.isdigit():
+            if not raw or raw.lower() == "none":
+                if role_lower == "doctor":
+                    try:
+                        profile = await api_client.get_doctor_profile_by_user_id(user_id)
+                        doc_id = profile.get("id") if isinstance(profile, dict) else None
+                        if doc_id:
+                            all_cd = await api_client.get_all_clinic_doctors()
+                            if isinstance(all_cd, list):
+                                my_clinic_ids = [(cd.get("clinic") or {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id]
+                                if my_clinic_ids:
+                                    args["clinic_id"] = str(my_clinic_ids[0])
+                                else:
+                                    return json.dumps({"error": "You are not assigned to any clinics."})
+                    except Exception as e:
+                        print(f"Error auto-detecting doctor clinic: {e}")
+            elif not raw.isdigit():
                 resolved = await _resolve_clinic_id(raw)
                 if not resolved:
                     return json.dumps({"error": f"No clinic found matching '{raw}'. Use get_all_clinics to see available clinics."})
                 print(f"[Clinic Resolve] '{raw}' -> ID {resolved}")
                 args["clinic_id"] = resolved
+
+        # --- Doctor name -> ID resolution and Data Parsing ---
+        if fn_name in ("create_clinic", "update_clinic"):
+            # For update_clinic, the data is inside args["data"]
+            target_args = args.get("data", {}) if fn_name == "update_clinic" else args
+            
+            doctor_names = target_args.pop("doctorNames", [])
+            if doctor_names:
+                all_doctors = await api_client.get_all_doctors()
+                if isinstance(all_doctors, list):
+                    doctor_ids = args.get("doctorIds", [])
+                    for name in doctor_names:
+                        name_lower = name.lower()
+                        for doc in all_doctors:
+                            first = str(doc.get("firstName") or "").lower()
+                            last = str(doc.get("lastName") or "").lower()
+                            full_name = f"{first} {last}".strip()
+                            if full_name and (name_lower in full_name or full_name in name_lower):
+                                target_args.setdefault("doctorIds", []).append(doc.get("id"))
+                                break
+                    target_args["doctorIds"] = list(set(target_args.get("doctorIds", [])))
+
+            if "scheduledTime" in target_args:
+                try:
+                    import re
+                    from datetime import datetime
+                    s = str(target_args["scheduledTime"]).strip().lower().replace('.', ':')
+                    s = re.sub(r'[^0-9:amp ]', '', s).replace('am', ' am').replace('pm', ' pm').replace('  ', ' ').strip()
+                    if 'am' in s or 'pm' in s:
+                        target_args["scheduledTime"] = datetime.strptime(s, "%I:%M %p" if ':' in s else "%I %p").strftime("%H:%M:%S")
+                    else:
+                        target_args["scheduledTime"] = datetime.strptime(s, "%H:%M:%S" if s.count(':') == 2 else "%H:%M").strftime("%H:%M:%S")
+                except Exception as e:
+                    return json.dumps({"error": f"Invalid scheduledTime format '{target_args['scheduledTime']}'. You MUST use HH:MM format (24-hour clock)."})
+                    
+            if "scheduledDate" in target_args:
+                try:
+                    from datetime import datetime
+                    s = str(target_args["scheduledDate"]).strip().replace('.', '-').replace('/', '-')
+                    parts = s.split('-')
+                    if len(parts) == 3:
+                        if len(parts[0]) == 4:
+                            target_args["scheduledDate"] = datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+                        else:
+                            target_args["scheduledDate"] = datetime.strptime(s, "%d-%m-%Y").strftime("%Y-%m-%d")
+                    else:
+                        # Try to parse exact YYYY-MM-DD just in case
+                        target_args["scheduledDate"] = datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+                except Exception as e:
+                    return json.dumps({"error": f"Invalid scheduledDate format '{target_args['scheduledDate']}'. You MUST use YYYY-MM-DD format (e.g. 2027-02-16)."})
 
         # --- Dispatch ---
         result = None
@@ -222,6 +294,17 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
             result = await api_client.get_all_doctors()
         elif fn_name == "get_all_clinics":
             result = await api_client.get_all_clinics()
+            if role_lower == "doctor" and isinstance(result, list):
+                try:
+                    profile = await api_client.get_doctor_profile_by_user_id(user_id)
+                    doc_id = profile.get("id") if isinstance(profile, dict) else None
+                    if doc_id:
+                        all_cd = await api_client.get_all_clinic_doctors()
+                        if isinstance(all_cd, list):
+                            my_clinic_ids = {(cd.get("clinic") or {}).get("id") for cd in all_cd if cd.get("doctorRefId") == doc_id}
+                            result = [c for c in result if c.get("id") in my_clinic_ids]
+                except Exception as e:
+                    print(f"Error filtering clinics for doctor: {e}")
         elif fn_name == "get_clinic_details":
             result = await api_client.get_clinic(int(args["clinic_id"]))
         elif fn_name == "get_clinic_doctors":
@@ -371,14 +454,15 @@ def _build_system_prompt(role: str, user_id: int) -> str:
             f"\nThe current user is a DOCTOR (user ID: {user_id}). "
             "Doctors can view patient details, their own consultations (doctor_id={user_id}), "
             "clinic queues, and lab results. They cannot view other doctors private data.\n"
-            "When asked about your own consultations, use doctor_id={user_id} in get_consultations."
+            "When asked about your own consultations, use doctor_id={user_id} in get_consultations.\n"
+            "When asked to check your assigned clinics, ALWAYS use the `get_all_clinics` tool. The system will automatically filter the results to only return the clinics you are assigned to."
         ).format(user_id=user_id)
     elif role_lower == "patient":
         return base + (
             f"\nThe current user is a PATIENT (user ID: {user_id}). "
             "Patients can ONLY see their own data. "
             "When fetching consultations or lab results, the system will automatically scope to this patient. "
-            "Patients can browse available clinics."
+            "Patients can browse available clinics. If they ask for nearby or upcoming clinics, ALWAYS use the `get_all_clinics` tool, and then manually filter the results based on their location and the current date to provide the most relevant upcoming options."
         )
     return base + f"\nThe current user has role '{role}' (user ID: {user_id})."
 
@@ -502,20 +586,21 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
     tools = get_tools_for_role(role)
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
 
-    intent = system1_router.fast_intent_classification(messages)
+    intent = await system1_router.fast_intent_classification(messages)
     print(f"[System 1 Router] intent={intent}")
 
     if intent == "tool":
-        selected_tool_name = system1_router.fast_tool_selection(messages, tools)
+        selected_tool_name = await system1_router.fast_tool_selection(messages, tools)
         print(f"[System 1 Router] selected tool: {selected_tool_name}")
         
         if selected_tool_name != "unknown":
-            # Pass ONLY the selected tool to the generative LLM
-            tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
+            # We don't restrict tools here anymore because the zero-shot router often picks the wrong tool
+            # But we keep the optimization for zero-arg tools if it happens to be right
+            matched_tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
             
             # Optimization: If the selected tool has NO parameters, execute it immediately!
-            if tools:
-                selected_tool = tools[0]
+            if matched_tools:
+                selected_tool = matched_tools[0]
                 params = selected_tool["function"].get("parameters", {}).get("properties", {})
                 if not params:
                     print(f"[System 1 Router] Tool {selected_tool_name} requires no args, executing directly!")
@@ -549,4 +634,6 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
                 print(f"[Gradio Error] {e}")
                 # Fall through to simple reply below if Gradio fails
 
-    return await _run_simple_reply(full_messages, sanitize=(intent == "health"))
+    # If we get here (general intent, or health failed), we still give the LLM its tools!
+    # Modern LLMs know how to just chat if no tool is needed.
+    return await _run_tool_loop(full_messages, tools, role, user_id)
