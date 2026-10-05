@@ -379,7 +379,32 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
         elif fn_name == "create_clinic":
             result = await api_client.create_clinic(args)
         elif fn_name == "update_clinic":
-            result = await api_client.update_clinic(args["clinic_id"], args.get("data", {}))
+            # Fetch existing clinic to merge fields, since PUT replaces the whole object
+            existing_clinic = await api_client.get_clinic(int(args["clinic_id"]))
+            if isinstance(existing_clinic, dict) and "error" not in existing_clinic:
+                upd_data = existing_clinic.copy()
+                # If doctorIds isn't populated properly from the backend, default to empty list
+                if "doctorIds" not in upd_data or not upd_data["doctorIds"]:
+                    upd_data["doctorIds"] = []
+                # Merge new data
+                new_data = args.get("data", {})
+                
+                # Append new doctorIds rather than just overwriting if we're assigning a doctor
+                if "doctorIds" in new_data:
+                    # Merge sets to avoid duplicates
+                    current_docs = set(upd_data.get("doctorIds", []))
+                    new_docs = set(new_data["doctorIds"])
+                    upd_data["doctorIds"] = list(current_docs.union(new_docs))
+                
+                # Update all other fields
+                for k, v in new_data.items():
+                    if k != "doctorIds":
+                        upd_data[k] = v
+                
+                upd_data["id"] = args["clinic_id"]
+                result = await api_client.update_clinic(args["clinic_id"], upd_data)
+            else:
+                result = json.dumps({"error": f"Failed to fetch existing clinic {args['clinic_id']} for update."})
         elif fn_name == "delete_clinic":
             result = await api_client.delete_clinic(args["clinic_id"])
         elif fn_name == "create_consultation":
