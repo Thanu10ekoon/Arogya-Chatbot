@@ -290,6 +290,11 @@ async def _execute_tool(fn_name: str, args: dict, role: str, user_id: int) -> st
             result = await api_client.get_all_patients()
         elif fn_name == "get_patient_details":
             result = await api_client.get_patient_profile_by_user_id(args["user_id"])
+            if isinstance(result, dict) and "error" in result:
+                # Fallback to fetch just the basic user details if profile doesn't exist
+                user_res = await api_client.get_user(args["user_id"])
+                if isinstance(user_res, dict) and "error" not in user_res:
+                    result = {"note": "Patient profile not created yet, showing basic user info", "user": user_res}
         elif fn_name == "get_all_doctors":
             result = await api_client.get_all_doctors()
         elif fn_name == "get_all_clinics":
@@ -466,6 +471,7 @@ def _build_system_prompt(role: str, user_id: int) -> str:
         f"- NEVER narrate your tool usage (do not say 'Let me call get_all_clinics', just call it).\n"
         f"- If a tool returns empty data, say so clearly.\n"
         f"- Always use tools when live data is needed. Do not guess.\n"
+        f"- If asked about the queue of a clinic, YOU MUST CALL get_clinic_queue. DO NOT MAKE UP QUEUE DATA OR PATIENT NAMES.\n"
         f"- When a user requests an action (like creating a clinic or scheduling a consultation), check the required parameters for the corresponding tool. If any are missing, ask the user to provide them BEFORE calling the tool. Do not invent missing values.\n"
     )
     role_lower = role.lower()
@@ -615,27 +621,8 @@ async def chat(messages: list[dict], role: str, user_id: int) -> str:
     print(f"[System 1 Router] intent={intent}")
 
     if intent == "tool":
-        selected_tool_name = await system1_router.fast_tool_selection(messages, tools)
-        print(f"[System 1 Router] selected tool: {selected_tool_name}")
-        
-        if selected_tool_name != "unknown":
-            # We don't restrict tools here anymore because the zero-shot router often picks the wrong tool
-            # But we keep the optimization for zero-arg tools if it happens to be right
-            matched_tools = [t for t in tools if t["function"]["name"] == selected_tool_name]
-            
-            # Optimization: If the selected tool has NO parameters, execute it immediately!
-            if matched_tools:
-                selected_tool = matched_tools[0]
-                params = selected_tool["function"].get("parameters", {}).get("properties", {})
-                if not params:
-                    print(f"[System 1 Router] Tool {selected_tool_name} requires no args, executing directly!")
-                    tool_result = await _execute_tool(selected_tool_name, {}, role, user_id)
-                    full_messages.append({
-                        "role": "user",
-                        "content": f"System retrieved data: {tool_result}\n\nPlease summarize this clearly for me.",
-                    })
-                    return await _run_simple_reply(full_messages)
-
+        # We no longer restrict or preemptively execute tools based on the zero-shot router
+        # because it often guesses wrong and traps the LLM in a tool-less fallback state, causing hallucinations.
         return await _run_tool_loop(full_messages, tools, role, user_id)
 
     if intent == "health" and role.lower() == "patient":
